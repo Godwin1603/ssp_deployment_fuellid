@@ -45,6 +45,7 @@ class StreamToLogger(object):
     def flush(self):
         pass
 
+logging.raiseExceptions = False
 sys.stdout = StreamToLogger(logger, logging.INFO)
 sys.stderr = StreamToLogger(logger, logging.ERROR)
 
