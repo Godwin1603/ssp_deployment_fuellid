@@ -46,22 +46,27 @@
             gap: 10px;
         }
 
-        /* Warning Banner — hidden by default, shown only when capturing front panel */
+        /* Warning Banner — overlaid on top of the live video feed */
         .warning-banner {
-            flex-shrink: 0;
             display: none;              /* hidden until WAITING_FRONT is active */
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 20;
             align-items: center;
             justify-content: center;
-            gap: 12px;
-            background: transparent;
-            border: 2px solid #f59e0b;
-            border-radius: 8px;
-            padding: 9px 20px;
-            color: #b45309;
+            gap: 10px;
+            background: rgba(180, 83, 9, 0.92);
+            backdrop-filter: blur(6px);
+            border-bottom: 2px solid #f59e0b;
+            padding: 10px 20px;
+            color: #fef3c7;
             font-family: var(--font-display);
-            font-size: 18px;
+            font-size: 13px;
             font-weight: 700;
-            letter-spacing: 0.02em;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
         }
 
         .warning-banner.visible {
@@ -73,19 +78,19 @@
             align-items: center;
             flex-shrink: 0;
             animation: warn-pulse 1.8s ease-in-out infinite;
-            color: #f59e0b;
+            color: #fde68a;
         }
 
         .warning-banner .warn-icon svg {
-            width: 24px;
-            height: 24px;
+            width: 20px;
+            height: 20px;
         }
 
         .warning-banner .warn-dot {
-            width: 10px;
-            height: 10px;
+            width: 8px;
+            height: 8px;
             border-radius: 50%;
-            background: #f59e0b;
+            background: #fde68a;
             flex-shrink: 0;
             animation: warn-pulse 1.8s ease-in-out infinite;
         }
@@ -93,6 +98,51 @@
         @keyframes warn-pulse {
             0%, 100% { opacity: 1; transform: scale(1); }
             50%       { opacity: 0.45; transform: scale(0.82); }
+        }
+
+        /* Defect Alert Overlay — shown on the feed when a defect is detected */
+        .defect-feed-alert {
+            display: none;
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 20;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            background: rgba(185, 28, 28, 0.90);
+            backdrop-filter: blur(6px);
+            border-top: 2px solid #ef4444;
+            padding: 10px 20px;
+            font-family: var(--font-display);
+            font-size: 13px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #fef2f2;
+            animation: defect-flash 1.2s ease-in-out infinite;
+        }
+
+        .defect-feed-alert.active {
+            display: flex;
+        }
+
+        .defect-feed-alert .defect-icon {
+            display: flex;
+            align-items: center;
+            flex-shrink: 0;
+            color: #fca5a5;
+        }
+
+        .defect-feed-alert .defect-icon svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        @keyframes defect-flash {
+            0%, 100% { background: rgba(185, 28, 28, 0.90); }
+            50%       { background: rgba(220, 38, 38, 0.98); }
         }
 
         /* Header Styles */
@@ -662,22 +712,7 @@
 </head>
 <body>
 
-    <!-- Warning Banner — shown only during WAITING_FRONT state -->
-    <div class="warning-banner" id="warning-banner">
-        <span class="warn-dot"></span>
-        <span class="warn-icon">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/>
-            </svg>
-        </span>
-        <span>WARNING — The system is capturing images. Place the part correctly and keep hands and objects away from the camera.</span>
-        <span class="warn-icon">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/>
-            </svg>
-        </span>
-        <span class="warn-dot"></span>
-    </div>
+
 
     <!-- Header -->
     <header>
@@ -707,6 +742,39 @@
         <!-- Left Side: Live Feed -->
         <div class="feed-container">
             <div class="live-view">
+
+                <!-- Warning Banner overlaid on top of feed — shown during WAITING_FRONT -->
+                <div class="warning-banner" id="warning-banner">
+                    <span class="warn-dot"></span>
+                    <span class="warn-icon">
+                        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/>
+                        </svg>
+                    </span>
+                    <span>WARNING — System is capturing. Keep hands away from the camera.</span>
+                    <span class="warn-icon">
+                        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/>
+                        </svg>
+                    </span>
+                    <span class="warn-dot"></span>
+                </div>
+
+                <!-- Defect Alert overlaid at bottom of feed — shown when defects detected -->
+                <div class="defect-feed-alert" id="defect-feed-alert">
+                    <span class="defect-icon">
+                        <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/>
+                        </svg>
+                    </span>
+                    <span id="defect-feed-alert-text">DEFECT DETECTED</span>
+                    <span class="defect-icon">
+                        <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/>
+                        </svg>
+                    </span>
+                </div>
+
                 <div class="hud-overlay">
                     <div class="hud-top">
                         <div class="hud-badge badge-live">LIVE</div>
@@ -726,8 +794,6 @@
                     </svg>
                     <span>Camera Stream Standby</span>
                 </div>
-
-
 
             </div>
         </div>
@@ -1202,6 +1268,23 @@
             }
         }
 
+        // ── Audio Announcement (Web Speech API) ─────────────────────────────
+        // Tracks which defects have already been announced in the current cycle
+        // so we only speak once per new defect, not on every 500 ms poll.
+        let _announcedDefects = new Set();
+
+        function speakDefect(text) {
+            if (!window.speechSynthesis) return;
+            // Cancel any ongoing utterance so new ones aren't queued behind old ones
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang   = 'en-US';
+            utterance.rate   = 0.95;   // slightly slower for clarity
+            utterance.pitch  = 1.0;
+            utterance.volume = 1.0;
+            window.speechSynthesis.speak(utterance);
+        }
+
         // Status Polling Loop
         function pollStatus() {
             fetch('/status')
@@ -1350,6 +1433,36 @@
                 } else {
                     warningEl.style.display = 'none';
                     defectsSection.style.borderColor = 'var(--dark-border)';
+                }
+
+                // ── Defect feed overlay banner (on the video feed) ────────────────
+                const feedAlertEl   = document.getElementById('defect-feed-alert');
+                const feedAlertText = document.getElementById('defect-feed-alert-text');
+                if (warningMessages.length > 0) {
+                    feedAlertText.textContent = '⚠ ' + warningMessages.join('  |  ');
+                    feedAlertEl.classList.add('active');
+                } else {
+                    feedAlertEl.classList.remove('active');
+                }
+
+                // ── Speak newly detected defects ─────────────────────────────────
+                // If all defects cleared (new cycle), reset the announced set
+                if (warningMessages.length === 0) {
+                    _announcedDefects.clear();
+                } else {
+                    const defectAnnouncements = [
+                        { flag: hasDent,      key: 'dent',     speech: 'Dent is detected' },
+                        { flag: hasBulge,     key: 'bulge',    speech: 'Bulge is detected' },
+                        { flag: hasLinemark,  key: 'linemark', speech: 'Line mark is detected' },
+                        { flag: hasDamage,    key: 'damage',   speech: 'Damage is detected' }
+                    ];
+                    for (const item of defectAnnouncements) {
+                        if (item.flag && !_announcedDefects.has(item.key)) {
+                            _announcedDefects.add(item.key);
+                            speakDefect(item.speech);
+                            break; // speak one at a time; next poll will speak the next new one
+                        }
+                    }
                 }
 
                 // Update Sequence Steps helper
