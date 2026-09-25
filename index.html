@@ -1006,6 +1006,34 @@
                         </div>
 
                         <div id="gige-message" style="margin-top: 8px; font-size: 11px; color: #555; text-align: center;"></div>
+
+                        <!-- Audio Settings Card -->
+                        <div style="margin-top: 14px; background: #f0f7ff; border: 1px solid #b3d4f7; border-radius: 8px; padding: 12px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <span style="font-weight: 700; font-size: 12px; color: #1a3a5c; display: flex; align-items: center; gap: 6px;">
+                                    <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color:#2563eb">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"/>
+                                    </svg>
+                                    Audio Announcements
+                                </span>
+                                <span id="audio-status-badge" style="font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; background: #d1fae5; color: #065f46;">ON</span>
+                            </div>
+                            <div style="display: flex; gap: 8px;">
+                                <button id="audio-toggle-btn" onclick="toggleAudio()" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; background: #ef4444; color: white; border: none; padding: 8px 10px; border-radius: 6px; font-family: var(--font-body); font-weight: 600; font-size: 11px; cursor: pointer; transition: all 0.2s;">
+                                    <svg id="audio-toggle-icon" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6 4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"/>
+                                    </svg>
+                                    <span id="audio-toggle-label">Mute</span>
+                                </button>
+                                <button onclick="testAudio()" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; background: #2563eb; color: white; border: none; padding: 8px 10px; border-radius: 6px; font-family: var(--font-body); font-weight: 600; font-size: 11px; cursor: pointer; transition: opacity 0.2s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
+                                    <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z"/>
+                                    </svg>
+                                    Test Audio
+                                </button>
+                            </div>
+                        </div>
+
                     </div>
 
                     <!-- Upload Panel -->
@@ -1272,9 +1300,41 @@
         // Tracks which defects have already been announced in the current cycle
         // so we only speak once per new defect, not on every 500 ms poll.
         let _announcedDefects = new Set();
+        let _audioMuted = false;
+
+        function toggleAudio() {
+            _audioMuted = !_audioMuted;
+            const btn    = document.getElementById('audio-toggle-btn');
+            const label  = document.getElementById('audio-toggle-label');
+            const badge  = document.getElementById('audio-status-badge');
+            const icon   = document.getElementById('audio-toggle-icon');
+            if (_audioMuted) {
+                // Currently muted — show Unmute option
+                label.textContent = 'Unmute';
+                btn.style.background = '#10b981';
+                badge.textContent = 'MUTED';
+                badge.style.background = '#fee2e2';
+                badge.style.color = '#991b1b';
+                icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"/>';
+                window.speechSynthesis.cancel();
+            } else {
+                // Currently unmuted — show Mute option
+                label.textContent = 'Mute';
+                btn.style.background = '#ef4444';
+                badge.textContent = 'ON';
+                badge.style.background = '#d1fae5';
+                badge.style.color = '#065f46';
+                icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6 4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"/>';
+            }
+        }
+
+        function testAudio() {
+            if (_audioMuted) return;
+            speakDefect('Audio test. Defect detection audio announcements are working correctly.');
+        }
 
         function speakDefect(text) {
-            if (!window.speechSynthesis) return;
+            if (!window.speechSynthesis || _audioMuted) return;
             // Cancel any ongoing utterance so new ones aren't queued behind old ones
             window.speechSynthesis.cancel();
             const utterance = new SpeechSynthesisUtterance(text);

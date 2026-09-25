@@ -3,7 +3,7 @@
 # --- AI & Vision Settings ---
 ai:
   # Path to the trained YOLO model
-  model_path: "ssp_yolov8-seg.pt"
+  model_path: "SSB_FUEL_LID_V4.pt"
   # Confidence threshold for detecting the OCR target regions (serial, back, etc.)
   ocr_confidence_threshold: 0.10
   # Fallback timeout (in seconds) before attempting to read the back panel if serial is missing
