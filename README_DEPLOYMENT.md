@@ -4,7 +4,7 @@ This folder (`ssp_deployment`) contains the production-ready version of the SSP 
 
 ## Key Improvements Over Development Version
 1. **`config.yaml`**: Hardcoded values (like thresholds, ports, timeouts) have been moved to `config.yaml` so the client can adjust settings without touching Python code.
-2. **Auto-Cleanup**: A background thread runs daily to delete old `lid_data/` images and reports older than the `retention_days` specified in `config.yaml` (default 30 days). This prevents disk space crashes.
+2. **Auto-Cleanup**: A background thread runs daily to delete old `fuel_door_data/` images and reports older than the `retention_days` specified in `config.yaml` (default 30 days). This prevents disk space crashes.
 3. **Rotating Logs**: `print()` statements are now captured and written to `logs/ssp_app.log`. The logs are rotated automatically at 10MB (keeping the last 5 files) to prevent the log file from growing infinitely.
 4. **Windows Service Installer**: Included `install_service.bat` to register the application as a background service using NSSM, ensuring it starts automatically on PC boot and restarts if it crashes.
 

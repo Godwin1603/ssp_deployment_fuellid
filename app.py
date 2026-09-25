@@ -541,7 +541,7 @@ def finalize_report_and_rename(c_data):
         
         # Check folder structure and resolve if serial folder already exists
         today_str = datetime.now().strftime("%Y-%m-%d")
-        day_dir = os.path.join("lid_data", today_str)
+        day_dir = os.path.join("fuel_door_data", today_str)
         os.makedirs(day_dir, exist_ok=True)
         
         timestamp_str = datetime.now().strftime("%H%M%S")
@@ -1656,7 +1656,7 @@ def yolo_worker_loop():
                         if active_cycle_data["temp_folder"] is None:
                             today_str = datetime.now().strftime("%Y-%m-%d")
                             timestamp = datetime.now().strftime("%H%M%S")
-                            temp_path = os.path.join("lid_data", today_str, f"temp_capture_{timestamp}")
+                            temp_path = os.path.join("fuel_door_data", today_str, f"temp_capture_{timestamp}")
                             os.makedirs(temp_path, exist_ok=True)
                             active_cycle_data["temp_folder"] = temp_path
                             current_cycle["step1_status"] = "OK"
@@ -1836,7 +1836,7 @@ def auto_cleanup_loop():
     while True:
         try:
             now = time.time()
-            data_dir = "lid_data"
+            data_dir = "fuel_door_data"
             if os.path.exists(data_dir):
                 for folder in os.listdir(data_dir):
                     folder_path = os.path.join(data_dir, folder)
@@ -1920,8 +1920,8 @@ def upload_video():
         
     file = request.files['video']
     print(f"[Upload Endpoint] File received: {file.filename}")
-    temp_video_path = os.path.join("lid_data", "temp_uploaded_video.mp4")
-    os.makedirs("lid_data", exist_ok=True)
+    temp_video_path = os.path.join("fuel_door_data", "temp_uploaded_video.mp4")
+    os.makedirs("fuel_door_data", exist_ok=True)
     file.save(temp_video_path)
     print(f"[Upload Endpoint] File successfully saved to {temp_video_path}")
     
@@ -2037,7 +2037,7 @@ def status():
 
 if __name__ == '__main__':
     # Initialize workspace folders
-    os.makedirs("lid_data", exist_ok=True)
+    os.makedirs("fuel_door_data", exist_ok=True)
     init_models()
     
     import subprocess
