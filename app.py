@@ -1262,10 +1262,10 @@ def video_processing_loop():
             overlay = None
             for det in dets:
                 class_name = det["class_name"]
-                if class_name in ["line_mark", "dent", "bulge", "damage"]:
+                if class_name in ["line_mark", "dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
                     mask_pts = det.get("mask")
                     if mask_pts is not None:
-                        color = (0, 0, 255) if class_name in ["dent", "bulge", "damage"] else (0, 255, 255)
+                        color = (0, 0, 255) if class_name in ["dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"] else (0, 255, 255)
                         pts = np.array(mask_pts, np.int32)
                         pts[:, 0] = (pts[:, 0] * scale_ann).astype(int)
                         pts[:, 1] = (pts[:, 1] * scale_ann).astype(int)
@@ -1296,12 +1296,12 @@ def video_processing_loop():
                     color = (255, 0, 255)
                 elif class_name in ["serial", "serial_area"]:
                     color = (255, 255, 0)
-                elif class_name in ["dent", "bulge", "damage"]:
+                elif class_name in ["dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
                     color = (0, 0, 255)
                 elif class_name == "line_mark":
                     color = (0, 255, 255)
 
-                if class_name in ["line_mark", "dent", "bulge", "damage"] and det.get("mask") is not None:
+                if class_name in ["line_mark", "dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"] and det.get("mask") is not None:
                     pts = np.array(det["mask"], np.int32)
                     pts[:, 0] = (pts[:, 0] * scale_ann).astype(int)
                     pts[:, 1] = (pts[:, 1] * scale_ann).astype(int)
@@ -1452,7 +1452,7 @@ def yolo_worker_loop():
                     metal_t = presence_cfg.get("metal_min_ratio", 0.15)
                     lap_t = presence_cfg.get("laplacian_variance_min", 150.0)
                     
-                    if class_name not in ["dent", "bulge", "line_mark", "damage"]:
+                    if class_name not in ["dent", "bulge", "line_mark", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
                         roi = frame_to_process[y1:y2, x1:x2]
                         if not has_part(roi, blue_t, metal_t, lap_t):
                             logger.info(f"Filtered out empty tray misclassified as '{class_name}' (conf: {conf:.2f})")
@@ -1481,10 +1481,10 @@ def yolo_worker_loop():
                     if class_name in ["front", "circle_front"]: color = (0, 165, 255)
                     elif class_name in ["back", "circle_back", "cricle_back"]: color = (255, 0, 255)
                     elif class_name in ["serial", "serial_area"]: color = (255, 255, 0)
-                    elif class_name in ["dent", "bulge", "damage"]: color = (0, 0, 255)
+                    elif class_name in ["dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]: color = (0, 0, 255)
                     elif class_name == "line_mark": color = (0, 255, 255)
                     
-                    if class_name in ["line_mark", "dent", "bulge", "damage"]:
+                    if class_name in ["line_mark", "dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
                         if mask_polygon is not None:
                             pts = np.array(mask_polygon, np.int32).reshape((-1, 1, 2))
                             overlay = annotated_frame.copy()
@@ -1511,7 +1511,7 @@ def yolo_worker_loop():
                         elif class_name == "holes":
                             has_holes_detected = True
                     
-                    if class_name in ["dent", "bulge", "line_mark", "damage"]:
+                    if class_name in ["dent", "bulge", "line_mark", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
                         frame_defects.append(class_name)
                         
                     if class_name == "holes":

@@ -627,7 +627,7 @@ def yolo_worker_loop():
                     cls_id = int(box.cls[0].cpu().item())
                     class_name = names[cls_id].lower()
                     
-                    if class_name in ["bulge", "dent"]:
+                    if class_name in ["bulge", "dent", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
                         continue
                         
                     conf = float(box.conf[0].cpu().item())

@@ -3,7 +3,7 @@
 # --- AI & Vision Settings ---
 ai:
   # Path to the trained YOLO model
-  model_path: "SSB_FUEL_LID_V4.pt"
+  model_path: "SSP_Fuel_lid_V5.pt"
   # Confidence threshold for detecting the OCR target regions (serial, back, etc.)
   ocr_confidence_threshold: 0.10
   # Fallback timeout (in seconds) before attempting to read the back panel if serial is missing
@@ -20,6 +20,14 @@ ai:
     damage: 0.85
     circle_front: 0.75
     circle_back: 0.75
+    flange_cut: 0.50
+    forming_damage: 0.50
+    hole_missing: 0.50
+    hole_spec_error: 0.50
+    holes: 0.50
+    leg_bend: 0.50
+    scrap_mark: 0.50
+    flange_bend: 0.50
   # Minimum bounding box area (in pixels) for a defect to be considered valid to prevent false positives quickly
   min_defect_area: 200
   # Default YOLO confidence threshold if a class is not specified above
