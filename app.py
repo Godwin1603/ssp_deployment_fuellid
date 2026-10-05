@@ -1495,8 +1495,8 @@ def yolo_worker_loop():
                             logger.info(f"Filtered out empty tray misclassified as '{class_name}' (conf: {conf:.2f})")
                             continue # Skip this bounding box
                     else:
-                        # Defect classes are only valid on the FRONT side
-                        if not has_front_detected:
+                        # Defect classes are valid on both FRONT and BACK sides
+                        if not (has_front_detected or has_back_detected):
                             continue # Skip this defect bounding box
                         
                         # Fast and accurate filter: remove tiny false positive defects based on area
@@ -1569,7 +1569,7 @@ def yolo_worker_loop():
             # When defects are detected on the front panel, save the annotated frame once per cycle.
             # annotated_frame already has all defect masks and bounding boxes drawn on it.
             # This gives us a 3rd image (in addition to clean front + clean back) for the report.
-            if frame_defects and has_front_detected and active_cycle_data["temp_folder"] is not None:
+            if frame_defects and (has_front_detected or has_back_detected) and active_cycle_data["temp_folder"] is not None:
                 with lock:
                     defect_frame_already_saved = active_cycle_data.get("defect_frame_path") is not None
                 if not defect_frame_already_saved:
