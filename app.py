@@ -2106,6 +2106,7 @@ def status():
     resp = dict(current_cycle)
     resp["is_processing"] = is_processing
     resp["capture_state"] = active_cycle_data.get("state", "WAITING_FRONT")
+    resp["roi"] = APP_CONFIG.get("roi")
     return jsonify(resp)
 
 if __name__ == '__main__':
