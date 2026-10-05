@@ -1428,6 +1428,10 @@ def yolo_worker_loop():
                     for box in boxes:
                         cls_id = int(box.cls[0].cpu().item())
                         class_name = names[cls_id].lower()
+                        conf = float(box.conf[0].cpu().item())
+                        if conf < CLASS_CONF_THRESHOLDS.get(class_name, YOLO_CONF_THRESHOLD):
+                            continue
+                            
                         if class_name in ["front", "circle_front", "back", "circle_back", "cricle_back"]:
                             xyxy_resized = box.xyxy[0].cpu().numpy()
                             x1 = int(xyxy_resized[0] / scale)
