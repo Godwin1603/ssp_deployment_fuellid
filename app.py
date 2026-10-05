@@ -16,7 +16,9 @@ import atexit
 import sys
 import ctypes
 import numpy as np
-import yaml
+from ruamel.yaml import YAML
+yaml = YAML()
+yaml.preserve_quotes = True
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -53,7 +55,7 @@ sys.stderr = StreamToLogger(logger, logging.ERROR)
 CONFIG_PATH = "config.yaml"
 if os.path.exists(CONFIG_PATH):
     with open(CONFIG_PATH, "r") as f:
-        APP_CONFIG = yaml.safe_load(f) or {}
+        APP_CONFIG = yaml.load(f) or {}
     logger.info("Loaded configuration from config.yaml")
 else:
     APP_CONFIG = {}
