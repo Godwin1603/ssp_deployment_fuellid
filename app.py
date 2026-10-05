@@ -1387,14 +1387,22 @@ def yolo_worker_loop():
             
             # Draw ROI on the annotated frame
             saved_roi = APP_CONFIG.get("roi")
-            if saved_roi:
-                rx = int(saved_roi.get("x", 0))
-                ry = int(saved_roi.get("y", 0))
-                rw = int(saved_roi.get("width", 0))
-                rh = int(saved_roi.get("height", 0))
-                if rw > 0 and rh > 0:
-                    cv2.rectangle(annotated_frame, (rx, ry), (rx + rw, ry + rh), (255, 165, 0), 2)
-                    cv2.putText(annotated_frame, "ROI", (rx, max(ry - 5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
+            if not saved_roi or int(saved_roi.get("width", 0)) == 0:
+                saved_roi = {
+                    "x": int(w_orig * 0.1),
+                    "y": int(h_orig * 0.1),
+                    "width": int(w_orig * 0.8),
+                    "height": int(h_orig * 0.8)
+                }
+                APP_CONFIG["roi"] = saved_roi
+                
+            rx = int(saved_roi.get("x", 0))
+            ry = int(saved_roi.get("y", 0))
+            rw = int(saved_roi.get("width", 0))
+            rh = int(saved_roi.get("height", 0))
+            if rw > 0 and rh > 0:
+                cv2.rectangle(annotated_frame, (rx, ry), (rx + rw, ry + rh), (255, 0, 0), 2)
+                cv2.putText(annotated_frame, "ROI", (rx, max(ry - 5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
             
             has_front_detected = False
             has_back_detected = False
@@ -1416,24 +1424,21 @@ def yolo_worker_loop():
                 names = results[0].names
                 
                 # --- PRE-CHECK ROI ---
-                if saved_roi:
-                    rx = int(saved_roi.get("x", 0))
-                    ry = int(saved_roi.get("y", 0))
-                    rw = int(saved_roi.get("width", 0))
-                    rh = int(saved_roi.get("height", 0))
-                    if rw > 0 and rh > 0:
-                        for box in boxes:
-                            cls_id = int(box.cls[0].cpu().item())
-                            class_name = names[cls_id].lower()
-                            if class_name in ["front", "circle_front", "back", "circle_back", "cricle_back"]:
-                                xyxy_resized = box.xyxy[0].cpu().numpy().astype(int)
-                                x1 = int(xyxy_resized[0] / scale)
-                                y1 = int(xyxy_resized[1] / scale)
-                                x2 = int(xyxy_resized[2] / scale)
-                                y2 = int(xyxy_resized[3] / scale)
-                                if x1 < rx or y1 < ry or x2 > rx + rw or y2 > ry + rh:
-                                    any_lid_outside_roi = True
-                                    break
+                if rw > 0 and rh > 0:
+                    for box in boxes:
+                        cls_id = int(box.cls[0].cpu().item())
+                        class_name = names[cls_id].lower()
+                        if class_name in ["front", "circle_front", "back", "circle_back", "cricle_back"]:
+                            xyxy_resized = box.xyxy[0].cpu().numpy()
+                            x1 = int(xyxy_resized[0] / scale)
+                            y1 = int(xyxy_resized[1] / scale)
+                            x2 = int(xyxy_resized[2] / scale)
+                            y2 = int(xyxy_resized[3] / scale)
+                            
+                            tol = 20
+                            if x1 < rx - tol or y1 < ry - tol or x2 > rx + rw + tol or y2 > ry + rh + tol:
+                                any_lid_outside_roi = True
+                                break
                                     
                 if any_lid_outside_roi:
                     boxes = [] # Skip drawing and processing any boxes since part is out of bounds
