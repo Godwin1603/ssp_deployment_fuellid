@@ -1400,7 +1400,7 @@
                 holesEl.textContent = holes + ' / 2';
                 
                 const isAnalyzing = data.status.toLowerCase().includes("analyzing") || data.status.toLowerCase().includes("capturing");
-                const holesMissing = isAnalyzing && (holes < 2);
+                const holesMissing = (isAnalyzing && (holes < 2)) || (data.defects && (data.defects.includes('hole_missing') || data.defects.includes('holes_missing')));
                 if (holesMissing) {
                     holesEl.style.color = 'var(--accent-red)';
                 } else {
@@ -1443,7 +1443,15 @@
                 const hasDent = data.defects && (data.defects.includes('bent') || data.defects.includes('dent'));
                 const hasBulge = data.defects && (data.defects.includes('bulge') || data.defects.includes('bukge'));
                 const hasLinemark = data.defects && (data.defects.includes('line_mark') || data.defects.includes('linemark') || data.defects.includes('line-mark'));
-                const hasDamage = data.defects && data.defects.includes('damage');
+                const hasDamage = data.defects && (
+                    data.defects.includes('damage') || 
+                    data.defects.includes('flange_cut') || 
+                    data.defects.includes('forming_damage') || 
+                    data.defects.includes('hole_spec_error') || 
+                    data.defects.includes('leg_bend') || 
+                    data.defects.includes('scrap_mark') || 
+                    data.defects.includes('flange_bend')
+                );
                 
                 if (hasDent) {
                     dentEl.textContent = 'FAIL';
