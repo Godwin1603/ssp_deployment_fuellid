@@ -1387,20 +1387,7 @@ def yolo_worker_loop():
             # Frame with annotations for saving
             annotated_frame = frame_to_process.copy()
             
-            # Draw ROI on the annotated frame
-            saved_roi = APP_CONFIG.get("roi")
-            if saved_roi:
-                rx = int(saved_roi.get("x", 0))
-                ry = int(saved_roi.get("y", 0))
-                rw = int(saved_roi.get("width", 0))
-                rh = int(saved_roi.get("height", 0))
-                if rw > 0 and rh > 0:
-                    cv2.rectangle(annotated_frame, (rx, ry), (rx + rw, ry + rh), (0, 255, 255), 3)
-                    cv2.putText(annotated_frame, "ROI", (rx, max(ry - 5, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-            else:
-                rw = 0
-                rh = 0
-            
+
             has_front_detected = False
             has_back_detected = False
             front_box = None
@@ -1414,13 +1401,24 @@ def yolo_worker_loop():
             has_holes_detected = False
             has_defect_detected = False
             
-            any_lid_outside_roi = False
-            
             if results:
                 boxes = results[0].boxes
                 names = results[0].names
                 
                 # --- PRE-CHECK ROI ---
+                roi_cfg = APP_CONFIG.get("roi")
+                rx, ry, rw, rh = roi_cfg if roi_cfg else (0, 0, 0, 0)
+                
+                # The UI sends ROI coordinates scaled down to UI_WIDTH (480)
+                # We must upscale them back to w_orig/h_orig before checking.
+                ui_scale = w_orig / 480.0 if w_orig > 480 else 1.0
+                rx = int(rx * ui_scale)
+                ry = int(ry * ui_scale)
+                rw = int(rw * ui_scale)
+                rh = int(rh * ui_scale)
+                
+                any_lid_outside_roi = False
+                
                 if rw > 0 and rh > 0:
                     for box in boxes:
                         cls_id = int(box.cls[0].cpu().item())
@@ -1437,13 +1435,15 @@ def yolo_worker_loop():
                             x2 = int(xyxy_resized[2] / scale)
                             y2 = int(xyxy_resized[3] / scale)
                             
-                            tol = 20
+                            tol = 0
                             if x1 < rx - tol or y1 < ry - tol or x2 > rx + rw + tol or y2 > ry + rh + tol:
                                 any_lid_outside_roi = True
                                 break
                                     
                 if any_lid_outside_roi:
-                    boxes = [] # Skip drawing and processing any boxes since part is out of bounds
+                    boxes = [] # Skip drawing any classes
+                    frame_defects.append("out_of_bounds")
+                    has_defect_detected = True
                 
                 for box in boxes:
                     cls_id = int(box.cls[0].cpu().item())
@@ -1514,7 +1514,6 @@ def yolo_worker_loop():
                             continue
                     # ------------------------------------
                     
-                    # ------------------------------------
 
                     new_detections.append({
                         "box": [x1, y1, x2, y2],
@@ -1698,13 +1697,7 @@ def yolo_worker_loop():
                     current_cycle["instruction"] = "PLACE FUEL DOOR (FRONT)"
                     current_cycle["instruction_color"] = "blue"
                     
-                    if any_lid_outside_roi:
-                        cv2.putText(annotated_frame, "PART IS OUTSIDE KEEP IN CORRECT ANGLE", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
-                        current_cycle["instruction"] = "PART IS OUTSIDE KEEP IN CORRECT ANGLE"
-                        current_cycle["instruction_color"] = "red"
-                        active_cycle_data["front_frames_count"] = 0
-                        active_cycle_data["front_first_seen_time"] = None
-                    elif front_box and not has_back_detected:
+                    if front_box and not has_back_detected:
                         if active_cycle_data["temp_folder"] is None:
                             today_str = datetime.now().strftime("%Y-%m-%d")
                             timestamp = datetime.now().strftime("%H%M%S")
@@ -1760,13 +1753,7 @@ def yolo_worker_loop():
                     
                     is_back_visible = (back_box is not None) or has_serial_detected
                     
-                    if any_lid_outside_roi:
-                        cv2.putText(annotated_frame, "PART IS OUTSIDE KEEP IN CORRECT ANGLE", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
-                        current_cycle["instruction"] = "PART IS OUTSIDE KEEP IN CORRECT ANGLE"
-                        current_cycle["instruction_color"] = "red"
-                        active_cycle_data["back_frames_count"] = 0
-                        active_cycle_data["back_first_seen_time"] = None
-                    elif is_back_visible and not has_front_detected:
+                    if is_back_visible and not has_front_detected:
                         # --- Panel Type Mismatch Check ---
                         # Only run when the back panel itself (not just serial/holes sub-features) is detected
                         front_type = active_cycle_data.get("front_type")
@@ -1870,8 +1857,13 @@ def yolo_worker_loop():
                     current_cycle["holes_count"] = min(2, max(current_cycle["holes_count"], frame_holes))
                     # Continuously accumulate defects from every frame (not just at capture time)
                     for d in frame_defects:
-                        active_cycle_data["defects_detected"].add(d)
-                    current_cycle["defects"] = list(active_cycle_data["defects_detected"])
+                        if d != "out_of_bounds":
+                            active_cycle_data["defects_detected"].add(d)
+                    
+                    current_defects = list(active_cycle_data["defects_detected"])
+                    if "out_of_bounds" in frame_defects:
+                        current_defects.append("out_of_bounds")
+                    current_cycle["defects"] = current_defects
                     if active_cycle_data["temp_folder"] is not None:
                         active_cycle_data["max_holes_detected"] = min(2, max(active_cycle_data["max_holes_detected"], frame_holes))
             if needs_reset:
@@ -1969,20 +1961,6 @@ def connect_camera():
         
     return jsonify({"status": "success", "message": "Camera stream connected"})
 
-@app.route('/save_roi', methods=['POST'])
-def save_roi():
-    data = request.json
-    roi = data.get('roi')
-    with lock:
-        APP_CONFIG["roi"] = roi
-        try:
-            with open(CONFIG_PATH, "w") as f:
-                yaml.dump(APP_CONFIG, f)
-            print(f"[ROI] Saved successfully: {roi}")
-            return jsonify({"status": "success", "message": "ROI saved successfully"})
-        except Exception as e:
-            print(f"[ROI] Failed to save ROI: {e}")
-            return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/upload_video', methods=['POST'])
 def upload_video():
@@ -2100,6 +2078,17 @@ def camera_diag():
         diag["frame_dtype"] = None
         diag["frame_channels"] = None
     return jsonify(diag)
+@app.route('/set_roi', methods=['POST'])
+def set_roi():
+    try:
+        data = request.json or {}
+        APP_CONFIG['roi'] = data.get('roi')
+        with open(CONFIG_PATH, 'w') as f:
+            yaml.dump(APP_CONFIG, f)
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
 @app.route('/status')
 def status():
     global is_processing

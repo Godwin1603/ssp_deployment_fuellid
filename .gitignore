@@ -3,3 +3,4 @@ __pycache__/
 logs/
 fuel_door_data/
 nssm.exe
+*.pt

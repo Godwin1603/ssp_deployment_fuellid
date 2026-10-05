@@ -128,6 +128,19 @@
             display: flex;
         }
 
+        .defect-feed-alert.giant {
+            top: 0;
+            font-size: 3rem;
+            font-weight: 800;
+            flex-direction: column;
+            background: rgba(220, 38, 38, 0.95);
+        }
+
+        .defect-feed-alert.giant .defect-icon svg {
+            width: 80px;
+            height: 80px;
+        }
+
         .defect-feed-alert .defect-icon {
             display: flex;
             align-items: center;
@@ -789,10 +802,7 @@
                 <!-- Clean Center Stream Panel -->
                 <div style="position: absolute; inset: 0; z-index: 1;">
                     <img id="video-stream" src="/video_feed" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'; document.getElementById('no-signal-msg').style.display='flex';" onload="this.style.display='block'; document.getElementById('no-signal-msg').style.display='none';" alt="Live Camera Feed">
-                    <!-- Persistent ROI overlay - always visible when ROI is saved -->
-                    <canvas id="roi-overlay" style="position: absolute; inset: 0; z-index: 9; pointer-events: none; width: 100%; height: 100%;"></canvas>
-                    <!-- Drawing canvas - only visible when setting ROI -->
-                    <canvas id="roi-canvas" style="position: absolute; inset: 0; z-index: 10; cursor: crosshair; display: none; width: 100%; height: 100%;"></canvas>
+                    <canvas id="roi-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>
                 </div>
                 <div class="no-signal-msg" id="no-signal-msg" style="position: relative; z-index: 2; display: none;">
                     <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -1412,6 +1422,15 @@
                 document.getElementById('trace-value').textContent = data.serial;
                 document.getElementById('trace-sub').textContent = 'OCR confidence: ' + data.confidence;
 
+                if (data.roi && !roiMode) {
+                    document.getElementById('roi-status-badge').textContent = 'ACTIVE';
+                    document.getElementById('roi-status-badge').style.background = '#d1fae5';
+                    document.getElementById('roi-status-badge').style.color = '#065f46';
+                    document.getElementById('roi-coords-display').textContent = `[${data.roi.join(', ')}]`;
+                    savedRect = data.roi;
+                    drawRoi();
+                }
+
                 // Warning banner: visible only while waiting to capture the front panel
                 const warningBanner = document.getElementById('warning-banner');
                 if (warningBanner) {
@@ -1471,6 +1490,7 @@
                 const hasDent = data.defects && (data.defects.includes('bent') || data.defects.includes('dent'));
                 const hasBulge = data.defects && (data.defects.includes('bulge') || data.defects.includes('bukge'));
                 const hasLinemark = data.defects && (data.defects.includes('line_mark') || data.defects.includes('linemark') || data.defects.includes('line-mark'));
+                const hasOutOfBounds = data.defects && data.defects.includes('out_of_bounds');
                 const hasDamage = data.defects && (
                     data.defects.includes('damage') || 
                     data.defects.includes('flange_cut') || 
@@ -1530,6 +1550,9 @@
                 if (holesMissing) {
                     warningMessages.push("HOLES MISSING");
                 }
+                if (hasOutOfBounds) {
+                    warningMessages.push("PART OUT OF BOUNDS");
+                }
                 
                 if (warningMessages.length > 0) {
                     warningEl.textContent = warningMessages.join(" & ");
@@ -1543,11 +1566,18 @@
                 // ── Defect feed overlay banner (on the video feed) ────────────────
                 const feedAlertEl   = document.getElementById('defect-feed-alert');
                 const feedAlertText = document.getElementById('defect-feed-alert-text');
-                if (warningMessages.length > 0) {
-                    feedAlertText.textContent = '⚠ ' + warningMessages.join('  |  ');
+                if (hasOutOfBounds) {
+                    feedAlertEl.classList.add('giant');
+                    feedAlertText.textContent = '⚠ ADJUST THE PART ⚠';
                     feedAlertEl.classList.add('active');
                 } else {
-                    feedAlertEl.classList.remove('active');
+                    feedAlertEl.classList.remove('giant');
+                    if (warningMessages.length > 0) {
+                        feedAlertText.textContent = '⚠ ' + warningMessages.join('  |  ');
+                        feedAlertEl.classList.add('active');
+                    } else {
+                        feedAlertEl.classList.remove('active');
+                    }
                 }
 
                 // ── Speak newly detected defects ─────────────────────────────────
@@ -1556,6 +1586,7 @@
                     _announcedDefects.clear();
                 } else {
                     const defectAnnouncements = [
+                        { flag: hasOutOfBounds, key: 'out_of_bounds', speech: 'Adjust the part. It is out of bounds' },
                         { flag: hasDent,      key: 'dent',     speech: 'Dent is detected' },
                         { flag: hasBulge,     key: 'bulge',    speech: 'Bulge is detected' },
                         { flag: hasLinemark,  key: 'linemark', speech: 'Line mark is detected' },
@@ -1600,204 +1631,195 @@
             }
         }
 
-        // Start polling status
-        setInterval(pollStatus, 500);
-
-        // --- ROI Drawing Logic ---
+        // ROI Drawing Logic
         let roiMode = false;
         let isDrawing = false;
-        let startX, startY;
-        let roiRect = null;
+        let startX = 0;
+        let startY = 0;
+        let currentRect = null;
+        let savedRect = null;
 
-        // Draw the persistent ROI overlay on the roi-overlay canvas
-        function drawRoiOverlay(savedRoi) {
-            const overlay = document.getElementById('roi-overlay');
-            if (!overlay) return;
-            overlay.width = overlay.clientWidth;
-            overlay.height = overlay.clientHeight;
-            const ctx = overlay.getContext('2d');
-            ctx.clearRect(0, 0, overlay.width, overlay.height);
-            if (!savedRoi || !savedRoi.width || !savedRoi.height) return;
-            const img = document.getElementById('video-stream');
-            if (!img.naturalWidth) return;
-            const canvasAspect = img.clientWidth / img.clientHeight;
-            const imgAspect = img.naturalWidth / img.naturalHeight;
-            let renderW, renderH, offsetX, offsetY;
-            if (canvasAspect < imgAspect) {
-                renderW = img.clientWidth; renderH = img.clientWidth / imgAspect;
-                offsetX = 0; offsetY = (img.clientHeight - renderH) / 2;
-            } else {
-                renderH = img.clientHeight; renderW = img.clientHeight * imgAspect;
-                offsetY = 0; offsetX = (img.clientWidth - renderW) / 2;
-            }
-            const scaleX = renderW / img.naturalWidth;
-            const scaleY = renderH / img.naturalHeight;
-            const sx = offsetX + savedRoi.x * scaleX;
-            const sy = offsetY + savedRoi.y * scaleY;
-            const sw = savedRoi.width * scaleX;
-            const sh = savedRoi.height * scaleY;
-            ctx.strokeStyle = '#eab308';
-            ctx.lineWidth = 3;
-            ctx.shadowColor = 'rgba(234,179,8,0.6)';
-            ctx.shadowBlur = 10;
-            ctx.strokeRect(sx, sy, sw, sh);
-            ctx.shadowBlur = 0;
-            ctx.fillStyle = '#eab308';
-            ctx.font = 'bold 13px monospace';
-            ctx.fillText('ROI', sx + 6, sy + 18);
+        const canvas = document.getElementById('roi-canvas');
+        const ctx = canvas.getContext('2d');
+        const videoStream = document.getElementById('video-stream');
+        
+        function resizeCanvas() {
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
+            drawRoi();
         }
-
-        function updateRoiStatusCard(roi) {
-            const badge = document.getElementById('roi-status-badge');
-            const coords = document.getElementById('roi-coords-display');
-            if (!badge || !coords) return;
-            if (roi && roi.width > 0) {
-                badge.textContent = 'ACTIVE';
-                badge.style.background = '#14532d';
-                badge.style.color = '#4ade80';
-                coords.textContent = 'x:' + roi.x + '  y:' + roi.y + '  w:' + roi.width + '  h:' + roi.height;
-            } else {
-                badge.textContent = 'NOT SET';
-                badge.style.background = '#1e3a5f';
-                badge.style.color = '#94a3b8';
-                coords.textContent = '\u2014';
-            }
-        }
-
-        function loadSavedRoi() {
-            fetch('/status')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.roi && data.roi.width > 0) {
-                        roiRect = data.roi;
-                        drawRoiOverlay(roiRect);
-                        updateRoiStatusCard(roiRect);
-                    }
-                }).catch(() => {});
-        }
-
-        document.getElementById('video-stream').addEventListener('load', () => {
-            if (roiRect) drawRoiOverlay(roiRect);
-        });
-        window.addEventListener('resize', () => {
-            if (roiRect) drawRoiOverlay(roiRect);
-        });
+        window.addEventListener('resize', resizeCanvas);
 
         function toggleRoiMode() {
             roiMode = !roiMode;
             const btn = document.getElementById('roi-btn');
-            const canvas = document.getElementById('roi-canvas');
             if (roiMode) {
-                btn.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg> Save ROI';
                 btn.style.background = '#10b981';
-                canvas.style.display = 'block';
-                canvas.width = canvas.clientWidth;
-                canvas.height = canvas.clientHeight;
-                const ctx = canvas.getContext('2d');
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                btn.innerHTML = 'Finish ROI';
+                canvas.style.pointerEvents = 'auto';
+                canvas.style.cursor = 'crosshair';
+                resizeCanvas();
             } else {
-                btn.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9h18 M9 21V9"/></svg> Set ROI';
                 btn.style.background = 'var(--accent-blue)';
-                canvas.style.display = 'none';
-                if (roiRect) {
-                    fetch('/save_roi', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ roi: roiRect })
-                    })
-                    .then(r => r.json())
-                    .then(() => { drawRoiOverlay(roiRect); updateRoiStatusCard(roiRect); })
-                    .catch(err => console.error('Failed to save ROI:', err));
+                btn.innerHTML = `<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9h18 M9 21V9"/></svg> Set ROI`;
+                canvas.style.pointerEvents = 'none';
+                if (currentRect) {
+                    saveRoi(currentRect);
                 }
             }
         }
-
+        
         function clearRoi() {
-            fetch('/save_roi', {
+            currentRect = null;
+            savedRect = null;
+            drawRoi();
+            fetch('/set_roi', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ roi: null })
-            })
-            .then(r => r.json())
-            .then(() => {
-                roiRect = null;
-                const canvas = document.getElementById('roi-canvas');
-                const ctx = canvas.getContext('2d');
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                canvas.style.display = 'none';
-                roiMode = false;
-                const btn = document.getElementById('roi-btn');
-                btn.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9h18 M9 21V9"/></svg> Set ROI';
-                btn.style.background = 'var(--accent-blue)';
-                drawRoiOverlay(null);
-                updateRoiStatusCard(null);
-            })
-            .catch(err => console.error('Failed to clear ROI:', err));
+                body: JSON.stringify({roi: null})
+            }).then(() => {
+                document.getElementById('roi-status-badge').textContent = 'NOT SET';
+                document.getElementById('roi-status-badge').style.background = '#1e3a5f';
+                document.getElementById('roi-status-badge').style.color = '#94a3b8';
+                document.getElementById('roi-coords-display').textContent = '—';
+            });
         }
 
-        const roiCanvas = document.getElementById('roi-canvas');
-        roiCanvas.addEventListener('mousedown', (e) => {
-            if (!roiMode) return;
-            const rect = roiCanvas.getBoundingClientRect();
-            startX = e.clientX - rect.left;
-            startY = e.clientY - rect.top;
-            isDrawing = true;
-        });
-
-        roiCanvas.addEventListener('mousemove', (e) => {
-            if (!isDrawing || !roiMode) return;
-            const rect = roiCanvas.getBoundingClientRect();
-            const mouseX = e.clientX - rect.left;
-            const mouseY = e.clientY - rect.top;
-            const ctx = roiCanvas.getContext('2d');
-            ctx.clearRect(0, 0, roiCanvas.width, roiCanvas.height);
-            ctx.fillStyle = 'rgba(0,0,0,0.45)';
-            ctx.fillRect(0, 0, roiCanvas.width, roiCanvas.height);
-            const w = mouseX - startX;
-            const h = mouseY - startY;
-            ctx.clearRect(startX, startY, w, h);
-            ctx.strokeStyle = '#eab308';
-            ctx.lineWidth = 3;
-            ctx.shadowColor = 'rgba(234,179,8,0.6)';
-            ctx.shadowBlur = 8;
-            ctx.strokeRect(startX, startY, w, h);
-        });
-
-        roiCanvas.addEventListener('mouseup', (e) => {
-            if (!isDrawing || !roiMode) return;
-            isDrawing = false;
-            const rect = roiCanvas.getBoundingClientRect();
-            const endX = e.clientX - rect.left;
-            const endY = e.clientY - rect.top;
-            const x = Math.min(startX, endX);
-            const y = Math.min(startY, endY);
-            const w = Math.abs(startX - endX);
-            const h = Math.abs(startY - endY);
-            const img = document.getElementById('video-stream');
-            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-                const canvasAspect = img.clientWidth / img.clientHeight;
-                const imgAspect = img.naturalWidth / img.naturalHeight;
-                let renderW, renderH, offsetX, offsetY;
-                if (canvasAspect < imgAspect) {
-                    renderW = img.clientWidth; renderH = img.clientWidth / imgAspect;
-                    offsetX = 0; offsetY = (img.clientHeight - renderH) / 2;
-                } else {
-                    renderH = img.clientHeight; renderW = img.clientHeight * imgAspect;
-                    offsetY = 0; offsetX = (img.clientWidth - renderW) / 2;
-                }
-                const absX = Math.round((x - offsetX) / renderW * img.naturalWidth);
-                const absY = Math.round((y - offsetY) / renderH * img.naturalHeight);
-                const absW = Math.round(w / renderW * img.naturalWidth);
-                const absH = Math.round(h / renderH * img.naturalHeight);
-                roiRect = { x: Math.max(0, absX), y: Math.max(0, absY), width: absW, height: absH };
-            }
-        });
-
-        // Load saved ROI on startup
-        loadSavedRoi();
-        // --- End ROI Logic ---
+        function getEventCoords(e) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            };
+        }
         
-        // --- End ROI Logic ---
+        function getImageBounds() {
+            const imgRatio = videoStream.naturalWidth / videoStream.naturalHeight;
+            const canvasRatio = canvas.width / canvas.height;
+            let renderWidth, renderHeight, offsetX = 0, offsetY = 0;
+            
+            if (!videoStream.naturalWidth) {
+                return { renderWidth: canvas.width, renderHeight: canvas.height, offsetX: 0, offsetY: 0 };
+            }
+
+            if (imgRatio > canvasRatio) {
+                renderWidth = canvas.width;
+                renderHeight = canvas.width / imgRatio;
+                offsetY = (canvas.height - renderHeight) / 2;
+            } else {
+                renderHeight = canvas.height;
+                renderWidth = canvas.height * imgRatio;
+                offsetX = (canvas.width - renderWidth) / 2;
+            }
+            return { renderWidth, renderHeight, offsetX, offsetY };
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (!roiMode) return;
+            isDrawing = true;
+            const coords = getEventCoords(e);
+            startX = coords.x;
+            startY = coords.y;
+            currentRect = { x: startX, y: startY, w: 0, h: 0 };
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing || !roiMode) return;
+            const coords = getEventCoords(e);
+            currentRect.w = coords.x - startX;
+            currentRect.h = coords.y - startY;
+            drawRoi();
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            if (!roiMode) return;
+            isDrawing = false;
+            if (currentRect) {
+                if (currentRect.w < 0) { currentRect.x += currentRect.w; currentRect.w = Math.abs(currentRect.w); }
+                if (currentRect.h < 0) { currentRect.y += currentRect.h; currentRect.h = Math.abs(currentRect.h); }
+            }
+            drawRoi();
+        });
+        
+        function drawRoi() {
+            if (canvas.width !== videoStream.clientWidth || canvas.height !== videoStream.clientHeight) {
+                if (videoStream.clientWidth > 0 && videoStream.clientHeight > 0) {
+                    canvas.width = videoStream.clientWidth;
+                    canvas.height = videoStream.clientHeight;
+                }
+            }
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (roiMode) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+            
+            if (currentRect) {
+                if (roiMode) {
+                    ctx.clearRect(currentRect.x, currentRect.y, currentRect.w, currentRect.h);
+                }
+                ctx.strokeStyle = '#10b981';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(currentRect.x, currentRect.y, currentRect.w, currentRect.h);
+                
+                ctx.fillStyle = '#10b981';
+                ctx.font = '10px monospace';
+                ctx.fillText(`ROI`, currentRect.x + 4, currentRect.y + 12);
+            } else if (savedRect && !roiMode) {
+                const bounds = getImageBounds();
+                if (videoStream.naturalWidth) {
+                    let cx = (savedRect[0] / videoStream.naturalWidth) * bounds.renderWidth + bounds.offsetX;
+                    let cy = (savedRect[1] / videoStream.naturalHeight) * bounds.renderHeight + bounds.offsetY;
+                    let cw = (savedRect[2] / videoStream.naturalWidth) * bounds.renderWidth;
+                    let ch = (savedRect[3] / videoStream.naturalHeight) * bounds.renderHeight;
+                    
+                    ctx.strokeStyle = '#10b981';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(cx, cy, cw, ch);
+                    
+                    ctx.fillStyle = '#10b981';
+                    ctx.font = '12px monospace';
+                    ctx.fillText(`ROI`, cx + 4, cy + 14);
+                }
+            }
+        }
+        
+        function saveRoi(rect) {
+            const bounds = getImageBounds();
+            if (!videoStream.naturalWidth) return;
+            
+            let x1 = Math.round((rect.x - bounds.offsetX) / bounds.renderWidth * videoStream.naturalWidth);
+            let y1 = Math.round((rect.y - bounds.offsetY) / bounds.renderHeight * videoStream.naturalHeight);
+            let w = Math.round((rect.w) / bounds.renderWidth * videoStream.naturalWidth);
+            let h = Math.round((rect.h) / bounds.renderHeight * videoStream.naturalHeight);
+            
+            x1 = Math.max(0, x1);
+            y1 = Math.max(0, y1);
+            w = Math.min(w, videoStream.naturalWidth - x1);
+            h = Math.min(h, videoStream.naturalHeight - y1);
+            
+            const roiData = [x1, y1, w, h];
+            savedRect = roiData;
+            
+            fetch('/set_roi', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({roi: roiData})
+            })
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('roi-status-badge').textContent = 'ACTIVE';
+                document.getElementById('roi-status-badge').style.background = '#d1fae5';
+                document.getElementById('roi-status-badge').style.color = '#065f46';
+                document.getElementById('roi-coords-display').textContent = `[${x1}, ${y1}, ${w}, ${h}]`;
+            });
+        }
+
+        // Start polling status
+        setInterval(pollStatus, 500);
+
+
     </script>
 </body>
 </html>
