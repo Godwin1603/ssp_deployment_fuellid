@@ -62,7 +62,7 @@ else:
 # Def config defaults
 OCR_CONF_THRESHOLD = APP_CONFIG.get("ai", {}).get("ocr_confidence_threshold", 0.20)
 OCR_FALLBACK_TIMEOUT = APP_CONFIG.get("ai", {}).get("ocr_fallback_timeout", 3.5)
-MODEL_PATH = APP_CONFIG.get("ai", {}).get("model_path", "ssp_yolov8-seg.pt")
+MODEL_PATH = APP_CONFIG.get("ai", {}).get("model_path", "SSP_Fuel_lid_V5.pt")
 RETENTION_DAYS = APP_CONFIG.get("storage", {}).get("retention_days", 30)
 
 
@@ -156,7 +156,7 @@ app = Flask(__name__, template_folder='.', static_folder='.', static_url_path=''
 # -------------------------------
 # Configuration & Global States
 # -------------------------------
-MODEL_PATH = "ssp_yolov8-seg.pt"
+MODEL_PATH = APP_CONFIG.get("ai", {}).get("model_path", "SSP_Fuel_lid_V5.pt")
 YOLO_MODEL = None
 OCR_ENGINE = None
 
@@ -1415,6 +1415,29 @@ def yolo_worker_loop():
                 boxes = results[0].boxes
                 names = results[0].names
                 
+                # --- PRE-CHECK ROI ---
+                if saved_roi:
+                    rx = int(saved_roi.get("x", 0))
+                    ry = int(saved_roi.get("y", 0))
+                    rw = int(saved_roi.get("width", 0))
+                    rh = int(saved_roi.get("height", 0))
+                    if rw > 0 and rh > 0:
+                        for box in boxes:
+                            cls_id = int(box.cls[0].cpu().item())
+                            class_name = names[cls_id].lower()
+                            if class_name in ["front", "circle_front", "back", "circle_back", "cricle_back"]:
+                                xyxy_resized = box.xyxy[0].cpu().numpy().astype(int)
+                                x1 = int(xyxy_resized[0] / scale)
+                                y1 = int(xyxy_resized[1] / scale)
+                                x2 = int(xyxy_resized[2] / scale)
+                                y2 = int(xyxy_resized[3] / scale)
+                                if x1 < rx or y1 < ry or x2 > rx + rw or y2 > ry + rh:
+                                    any_lid_outside_roi = True
+                                    break
+                                    
+                if any_lid_outside_roi:
+                    boxes = [] # Skip drawing and processing any boxes since part is out of bounds
+                
                 for box in boxes:
                     cls_id = int(box.cls[0].cpu().item())
                     class_name = names[cls_id].lower()
@@ -1484,15 +1507,7 @@ def yolo_worker_loop():
                             continue
                     # ------------------------------------
                     
-                    # ROI Check
-                    if saved_roi and class_name in ["front", "circle_front", "back", "circle_back", "cricle_back"]:
-                        rx = int(saved_roi.get("x", 0))
-                        ry = int(saved_roi.get("y", 0))
-                        rw = int(saved_roi.get("width", 0))
-                        rh = int(saved_roi.get("height", 0))
-                        if rw > 0 and rh > 0:
-                            if x1 < rx or y1 < ry or x2 > rx + rw or y2 > ry + rh:
-                                any_lid_outside_roi = True
+                    # ------------------------------------
 
                     new_detections.append({
                         "box": [x1, y1, x2, y2],
@@ -1548,7 +1563,7 @@ def yolo_worker_loop():
                     elif class_name in ["back", "circle_back", "cricle_back"]:
                         back_box = (x1, y1, x2, y2)
                         back_class = class_name  # Track the actual detected back class
-
+                        
                         
             # --- Defect Frame Save ---
             # When defects are detected on the front panel, save the annotated frame once per cycle.
@@ -1677,8 +1692,8 @@ def yolo_worker_loop():
                     current_cycle["instruction_color"] = "blue"
                     
                     if any_lid_outside_roi:
-                        cv2.putText(annotated_frame, "PART IS OUTSIDE ROI", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
-                        current_cycle["instruction"] = "PART IS OUTSIDE ROI"
+                        cv2.putText(annotated_frame, "PART IS OUTSIDE KEEP IN CORRECT ANGLE", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+                        current_cycle["instruction"] = "PART IS OUTSIDE KEEP IN CORRECT ANGLE"
                         current_cycle["instruction_color"] = "red"
                         active_cycle_data["front_frames_count"] = 0
                         active_cycle_data["front_first_seen_time"] = None
@@ -1739,8 +1754,8 @@ def yolo_worker_loop():
                     is_back_visible = (back_box is not None) or has_serial_detected
                     
                     if any_lid_outside_roi:
-                        cv2.putText(annotated_frame, "PART IS OUTSIDE ROI", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
-                        current_cycle["instruction"] = "PART IS OUTSIDE ROI"
+                        cv2.putText(annotated_frame, "PART IS OUTSIDE KEEP IN CORRECT ANGLE", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+                        current_cycle["instruction"] = "PART IS OUTSIDE KEEP IN CORRECT ANGLE"
                         current_cycle["instruction_color"] = "red"
                         active_cycle_data["back_frames_count"] = 0
                         active_cycle_data["back_first_seen_time"] = None
