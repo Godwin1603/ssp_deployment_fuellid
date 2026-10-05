@@ -1540,7 +1540,7 @@ def yolo_worker_loop():
                         for fd in active_cycle_data["frozen_defects"]:
                             if fd["class_name"] == class_name:
                                 fd_x, fd_y = (fd["box"][0] + fd["box"][2]) / 2, (fd["box"][1] + fd["box"][3]) / 2
-                                if (c_x - fd_x)**2 + (c_y - fd_y)**2 < 150**2:
+                                if (c_x - fd_x)**2 + (c_y - fd_y)**2 < 75**2:
                                     fd["box"] = [x1, y1, x2, y2]
                                     fd["mask"] = mask_polygon
                                     found = True
