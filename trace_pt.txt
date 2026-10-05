@@ -1,0 +1,1 @@
+[(64, 'MODEL_PATH = APP_CONFIG.get("ai", {}).get("model_path", "ssp_yolov8-seg.pt")'), (158, 'MODEL_PATH = "ssp_yolov8-seg.pt"'), (240, 'YOLO_MODEL = YOLO("yolov8n.pt")  # Fallback')]

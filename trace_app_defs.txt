@@ -1,0 +1,36 @@
+37: def __init__(self, logger, log_level=logging.INFO):
+41: def write(self, buf):
+44: def flush(self):
+83: def _patched_load(*args, **kwargs):
+102: def __init__(self, *args, **kwargs):
+105: def predict_crop(self, img_bgr):
+233: def init_models():
+256: def has_part(roi_bgr, blue_thresh, metal_min_ratio, laplacian_min):
+286: def run_ocr_on_crop(crop_rgb):
+345: def process_ocr_async(crop_img, temp_folder, crop_num, c_data):
+432: def finalize_report_and_rename(c_data):
+632: def check_and_finalize_cycle(c_data):
+641: def reset_cycle_state():
+691: def __init__(self):
+719: def scan_cameras(self):
+738: def connect(self, index=0, exposure=None, gain=None, gamma=None, pixel_format=None, trigger_mode=None):
+923: def cbOnEndOfFrameProc(self, pParam):
+1106: def get_frame(self):
+1112: def disconnect(self):
+1147: def update_features(self, exposure=None, gain=None, gamma=None, pixel_format=None, trigger_mode=None):
+1192: def video_processing_loop():
+1345: def yolo_worker_loop():
+1833: def auto_cleanup_loop():
+1858: def gen_frames():
+1879: def index():
+1883: def video_feed():
+1887: def connect_camera():
+1914: def upload_video():
+1942: def scan_cameras():
+1947: def connect_gige():
+1972: def disconnect_gige():
+1983: def update_gige_features():
+1999: def camera_status():
+2010: def camera_diag():
+2030: def status():
+2055: def cleanup_ocr():
