@@ -1387,22 +1387,17 @@ def yolo_worker_loop():
             
             # Draw ROI on the annotated frame
             saved_roi = APP_CONFIG.get("roi")
-            if not saved_roi or int(saved_roi.get("width", 0)) == 0:
-                saved_roi = {
-                    "x": int(w_orig * 0.1),
-                    "y": int(h_orig * 0.1),
-                    "width": int(w_orig * 0.8),
-                    "height": int(h_orig * 0.8)
-                }
-                APP_CONFIG["roi"] = saved_roi
-                
-            rx = int(saved_roi.get("x", 0))
-            ry = int(saved_roi.get("y", 0))
-            rw = int(saved_roi.get("width", 0))
-            rh = int(saved_roi.get("height", 0))
-            if rw > 0 and rh > 0:
-                cv2.rectangle(annotated_frame, (rx, ry), (rx + rw, ry + rh), (0, 255, 255), 3)
-                cv2.putText(annotated_frame, "ROI", (rx, max(ry - 5, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            if saved_roi:
+                rx = int(saved_roi.get("x", 0))
+                ry = int(saved_roi.get("y", 0))
+                rw = int(saved_roi.get("width", 0))
+                rh = int(saved_roi.get("height", 0))
+                if rw > 0 and rh > 0:
+                    cv2.rectangle(annotated_frame, (rx, ry), (rx + rw, ry + rh), (0, 255, 255), 3)
+                    cv2.putText(annotated_frame, "ROI", (rx, max(ry - 5, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            else:
+                rw = 0
+                rh = 0
             
             has_front_detected = False
             has_back_detected = False
