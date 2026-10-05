@@ -1384,6 +1384,18 @@ def yolo_worker_loop():
             
             # Frame with annotations for saving
             annotated_frame = frame_to_process.copy()
+            
+            # Draw ROI on the annotated frame
+            saved_roi = APP_CONFIG.get("roi")
+            if saved_roi:
+                rx = int(saved_roi.get("x", 0))
+                ry = int(saved_roi.get("y", 0))
+                rw = int(saved_roi.get("width", 0))
+                rh = int(saved_roi.get("height", 0))
+                if rw > 0 and rh > 0:
+                    cv2.rectangle(annotated_frame, (rx, ry), (rx + rw, ry + rh), (255, 165, 0), 2)
+                    cv2.putText(annotated_frame, "ROI", (rx, max(ry - 5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
+            
             has_front_detected = False
             has_back_detected = False
             front_box = None
@@ -1396,6 +1408,8 @@ def yolo_worker_loop():
             has_serial_detected = False
             has_holes_detected = False
             has_defect_detected = False
+            
+            any_lid_outside_roi = False
             
             if results:
                 boxes = results[0].boxes
@@ -1469,6 +1483,16 @@ def yolo_worker_loop():
                             logger.info(f"Filtered out {class_name} due to small area ({box_area} < {min_defect_area})")
                             continue
                     # ------------------------------------
+                    
+                    # ROI Check
+                    if saved_roi and class_name in ["front", "circle_front", "back", "circle_back", "cricle_back"]:
+                        rx = int(saved_roi.get("x", 0))
+                        ry = int(saved_roi.get("y", 0))
+                        rw = int(saved_roi.get("width", 0))
+                        rh = int(saved_roi.get("height", 0))
+                        if rw > 0 and rh > 0:
+                            if x1 < rx or y1 < ry or x2 > rx + rw or y2 > ry + rh:
+                                any_lid_outside_roi = True
 
                     new_detections.append({
                         "box": [x1, y1, x2, y2],
@@ -1652,7 +1676,13 @@ def yolo_worker_loop():
                     current_cycle["instruction"] = "PLACE FUEL DOOR (FRONT)"
                     current_cycle["instruction_color"] = "blue"
                     
-                    if front_box and not has_back_detected:
+                    if any_lid_outside_roi:
+                        cv2.putText(annotated_frame, "PART IS OUTSIDE ROI", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+                        current_cycle["instruction"] = "PART IS OUTSIDE ROI"
+                        current_cycle["instruction_color"] = "red"
+                        active_cycle_data["front_frames_count"] = 0
+                        active_cycle_data["front_first_seen_time"] = None
+                    elif front_box and not has_back_detected:
                         if active_cycle_data["temp_folder"] is None:
                             today_str = datetime.now().strftime("%Y-%m-%d")
                             timestamp = datetime.now().strftime("%H%M%S")
@@ -1708,7 +1738,13 @@ def yolo_worker_loop():
                     
                     is_back_visible = (back_box is not None) or has_serial_detected
                     
-                    if is_back_visible and not has_front_detected:
+                    if any_lid_outside_roi:
+                        cv2.putText(annotated_frame, "PART IS OUTSIDE ROI", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+                        current_cycle["instruction"] = "PART IS OUTSIDE ROI"
+                        current_cycle["instruction_color"] = "red"
+                        active_cycle_data["back_frames_count"] = 0
+                        active_cycle_data["back_first_seen_time"] = None
+                    elif is_back_visible and not has_front_detected:
                         # --- Panel Type Mismatch Check ---
                         # Only run when the back panel itself (not just serial/holes sub-features) is detected
                         front_type = active_cycle_data.get("front_type")
@@ -1910,6 +1946,21 @@ def connect_camera():
         print(f"[Camera Endpoint] Loaded RTSP stream. is_processing set to True.")
         
     return jsonify({"status": "success", "message": "Camera stream connected"})
+
+@app.route('/save_roi', methods=['POST'])
+def save_roi():
+    data = request.json
+    roi = data.get('roi')
+    with lock:
+        APP_CONFIG["roi"] = roi
+        try:
+            with open(CONFIG_PATH, "w") as f:
+                yaml.dump(APP_CONFIG, f)
+            print(f"[ROI] Saved successfully: {roi}")
+            return jsonify({"status": "success", "message": "ROI saved successfully"})
+        except Exception as e:
+            print(f"[ROI] Failed to save ROI: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/upload_video', methods=['POST'])
 def upload_video():
