@@ -1530,7 +1530,8 @@ def yolo_worker_loop():
                     elif class_name in ["dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]: color = (0, 0, 255)
                     elif class_name == "line_mark": color = (0, 255, 255)
                     
-                    if class_name in ["line_mark", "dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
+                    freeze_classes = ["back", "bulge", "circle_back", "cricle_back", "damage", "dent", "flange_bend", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "holes", "leg_bend", "line_mark", "scrap_mark"]
+                    if class_name in freeze_classes:
                         if "frozen_defects" not in active_cycle_data:
                             active_cycle_data["frozen_defects"] = []
                             
@@ -1550,7 +1551,6 @@ def yolo_worker_loop():
                                 "class_name": class_name, "box": [x1, y1, x2, y2], "mask": mask_polygon, "color": color
                             })
                             
-                        frame_defects.append(class_name)
                     else:
                         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 3)
                         label = f"{class_name}"
@@ -1602,7 +1602,9 @@ def yolo_worker_loop():
             # When defects are detected on the front panel, save the annotated frame once per cycle.
             # annotated_frame already has all defect masks and bounding boxes drawn on it.
             # This gives us a 3rd image (in addition to clean front + clean back) for the report.
-            has_any_defects = len(active_cycle_data.get("frozen_defects", [])) > 0
+            true_defects_in_frame = [fd['class_name'] for fd in active_cycle_data.get('frozen_defects', []) if fd['class_name'] not in ["back", "circle_back", "cricle_back", "holes"]]
+            has_any_defects = len(true_defects_in_frame) > 0
+            
             if has_any_defects and (has_front_detected or has_back_detected) and active_cycle_data["temp_folder"] is not None:
                 with lock:
                     defect_frame_already_saved = active_cycle_data.get("defect_frame_path") is not None
@@ -1611,7 +1613,7 @@ def yolo_worker_loop():
                     cv2.imwrite(defect_file, annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
                     with lock:
                         active_cycle_data["defect_frame_path"] = defect_file
-                    logger.info(f"[Defect Frame] Saved annotated defect frame: {defect_file} (defects: {[fd['class_name'] for fd in active_cycle_data.get('frozen_defects', [])]})")
+                    logger.info(f"[Defect Frame] Saved annotated defect frame: {defect_file} (defects: {true_defects_in_frame})")
 
             # OCR logic (runs asynchronously)
             # GUARD: Only attempt OCR after front has been captured (temp_folder exists)
@@ -1773,7 +1775,8 @@ def yolo_worker_loop():
                             current_cycle["step2_status"] = "OK"
                             active_cycle_data["state"] = "WAITING_BACK"
                             for fd in active_cycle_data.get("frozen_defects", []):
-                                active_cycle_data["defects_detected"].add(fd["class_name"])
+                                if fd["class_name"] not in ["back", "circle_back", "cricle_back", "holes"]:
+                                    active_cycle_data["defects_detected"].add(fd["class_name"])
 
                     else:
                         active_cycle_data["front_missing_frames"] = active_cycle_data.get("front_missing_frames", 0) + 1
@@ -1856,7 +1859,8 @@ def yolo_worker_loop():
                                     
                                     current_cycle["step3_status"] = "OK"
                                     for fd in active_cycle_data.get("frozen_defects", []):
-                                        active_cycle_data["defects_detected"].add(fd["class_name"])
+                                        if fd["class_name"] not in ["back", "circle_back", "cricle_back", "holes"]:
+                                            active_cycle_data["defects_detected"].add(fd["class_name"])
                                     
                                     # Go straight to finalization
                                     active_cycle_data["state"] = "WAITING_REMOVE"
@@ -1897,7 +1901,8 @@ def yolo_worker_loop():
                     current_cycle["holes_count"] = min(2, max(current_cycle["holes_count"], frame_holes))
                     # Continuously accumulate defects from every frame (not just at capture time)
                     for fd in active_cycle_data.get("frozen_defects", []):
-                        active_cycle_data["defects_detected"].add(fd["class_name"])
+                        if fd["class_name"] not in ["back", "circle_back", "cricle_back", "holes"]:
+                            active_cycle_data["defects_detected"].add(fd["class_name"])
                     current_cycle["defects"] = list(active_cycle_data["defects_detected"])
                     if active_cycle_data["temp_folder"] is not None:
                         active_cycle_data["max_holes_detected"] = min(2, max(active_cycle_data["max_holes_detected"], frame_holes))
