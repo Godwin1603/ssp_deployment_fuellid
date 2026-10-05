@@ -1318,7 +1318,7 @@ def video_processing_loop():
                 text_x = x1
                 text_y = max(y1 - 5, text_h + 5)
                 cv2.rectangle(annotated_frame, (text_x, text_y - text_h - 4), (text_x + text_w, text_y + 2), color, -1)
-                cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
             # Encode annotated frame to JPEG with lower quality for UI performance
             ret2, buffer = cv2.imencode('.jpg', annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
@@ -1559,7 +1559,7 @@ def yolo_worker_loop():
                         text_x = x1
                         text_y = max(y1 - 10, text_h + 10)
                         cv2.rectangle(annotated_frame, (text_x, text_y - text_h - 4), (text_x + text_w, text_y + 2), color, -1)
-                        cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+                        cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                     
                     # Track sub-features for fallback
                     if class_name in ["holes", "serial", "serial_area"]:
@@ -1597,7 +1597,7 @@ def yolo_worker_loop():
                     (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
                     text_x, text_y = fx1, max(fy1 - 10, text_h + 10)
                     cv2.rectangle(annotated_frame, (text_x, text_y - text_h - 4), (text_x + text_w, text_y + 2), fcolor, -1)
-                    cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+                    cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                         
             # --- Defect Frame Save ---
             # When defects are detected on the front panel, save the annotated frame once per cycle.
