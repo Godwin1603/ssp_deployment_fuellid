@@ -1313,7 +1313,7 @@ def video_processing_loop():
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
 
                 # Draw label without confidence percentage
-                label = f"{class_name}"
+                label = f"{class_name.replace('_', ' ').title()}"
                 (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
                 text_x = x1
                 text_y = max(y1 - 5, text_h + 5)
@@ -1554,7 +1554,7 @@ def yolo_worker_loop():
                             
                     else:
                         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 3)
-                        label = f"{class_name}"
+                        label = f"{class_name.replace('_', ' ').title()}"
                         (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
                         text_x = x1
                         text_y = max(y1 - 10, text_h + 10)
@@ -1593,7 +1593,7 @@ def yolo_worker_loop():
                         cv2.polylines(annotated_frame, [pts], True, fcolor, 3)
                     else:
                         cv2.rectangle(annotated_frame, (fx1, fy1), (fx2, fy2), fcolor, 3)
-                    label = f"{fcls}"
+                    label = f"{fcls.replace('_', ' ').title()}"
                     (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
                     text_x, text_y = fx1, max(fy1 - 10, text_h + 10)
                     cv2.rectangle(annotated_frame, (text_x, text_y - text_h - 4), (text_x + text_w, text_y + 2), fcolor, -1)
