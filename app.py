@@ -1401,8 +1401,8 @@ def yolo_worker_loop():
             rw = int(saved_roi.get("width", 0))
             rh = int(saved_roi.get("height", 0))
             if rw > 0 and rh > 0:
-                cv2.rectangle(annotated_frame, (rx, ry), (rx + rw, ry + rh), (255, 0, 0), 2)
-                cv2.putText(annotated_frame, "ROI", (rx, max(ry - 5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                cv2.rectangle(annotated_frame, (rx, ry), (rx + rw, ry + rh), (0, 255, 255), 3)
+                cv2.putText(annotated_frame, "ROI", (rx, max(ry - 5, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             
             has_front_detected = False
             has_back_detected = False
