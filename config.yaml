@@ -22,6 +22,7 @@ ai:
   # Minimum confidence for a panel (front/back) to trigger the ROI boundary check
   roi_confidence_threshold: 0.20
   min_defect_area: 200
+  defect_merge_distance: 50
   model_path: SSP_fine_tuned_V6.pt
   ocr_confidence_threshold: 0.1
   ocr_fallback_timeout: 3.5
