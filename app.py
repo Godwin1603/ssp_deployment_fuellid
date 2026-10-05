@@ -1426,7 +1426,8 @@ def yolo_worker_loop():
                         cls_id = int(box.cls[0].cpu().item())
                         class_name = names[cls_id].lower()
                         conf = float(box.conf[0].cpu().item())
-                        if conf < CLASS_CONF_THRESHOLDS.get(class_name, YOLO_CONF_THRESHOLD):
+                        roi_conf_threshold = APP_CONFIG.get("ai", {}).get("roi_confidence_threshold", 0.55)
+                        if conf < roi_conf_threshold:
                             continue
                             
                         if class_name in ["front", "circle_front", "back", "circle_back", "cricle_back"]:
