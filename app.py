@@ -1647,7 +1647,7 @@ def yolo_worker_loop():
                 ocr_target_det = None
                 
                 # Only trigger OCR when back panel (or circle_back) is confirmed in the frame
-                back_in_frame = any(d["class_name"] in ["back", "circle_back", "cricle_back"] for d in new_detections)
+                back_in_frame = any(d["class_name"] in ["back", "circle_back", "cricle_back", "serial", "serial_area", "holes"] for d in new_detections)
 
                 # Check for classes in priority order - only proceed if back is visible
                 if back_in_frame:
