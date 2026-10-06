@@ -1450,9 +1450,45 @@ def yolo_worker_loop():
                     frame_defects.append("out_of_bounds")
                     has_defect_detected = True
 
-            # Draw the ROI boundary on the live feed ALWAYS. Green if safe, Red if part is out of bounds.
-            roi_color = (0, 0, 255) if roi_warning else (0, 255, 0)
-            cv2.rectangle(annotated_frame, (rx, ry), (rx + rw, ry + rh), roi_color, 2)
+            # Draw the ROI boundary on the live feed ALWAYS. Green if safe, Flashy dark red if out of bounds.
+            import time as _time
+            if roi_warning:
+                # Flash between dark red and bright red at ~2Hz
+                flash_on = int(_time.time() * 2) % 2 == 0
+                roi_color    = (0, 0, 180) if flash_on else (30, 0, 80)   # bright red <-> dark red (BGR)
+                inner_color  = (0, 0, 255) if flash_on else (0, 0, 120)
+                overlay_alpha = 0.35 if flash_on else 0.0
+            else:
+                roi_color    = (0, 255, 0)   # solid green
+                inner_color  = (255, 255, 255)
+                overlay_alpha = 0.0
+
+            # Dark red filled overlay flash on the whole frame when warning
+            if roi_warning and overlay_alpha > 0:
+                flash_overlay = annotated_frame.copy()
+                cv2.rectangle(flash_overlay, (rx, ry), (rx + rw, ry + rh), (0, 0, 80), -1)
+                cv2.addWeighted(flash_overlay, overlay_alpha, annotated_frame, 1 - overlay_alpha, 0, annotated_frame)
+
+            # Outer thick border
+            cv2.rectangle(annotated_frame, (rx, ry), (rx + rw, ry + rh), roi_color, 5)
+            # Inner contrasting border
+            cv2.rectangle(annotated_frame, (rx + 5, ry + 5), (rx + rw - 5, ry + rh - 5), inner_color, 1)
+            # Corner accent marks (L-shaped corners for extra visibility)
+            corner_len = max(30, min(rw, rh) // 8)
+            corner_thickness = 6
+            corners = [(rx, ry), (rx + rw, ry), (rx, ry + rh), (rx + rw, ry + rh)]
+            dirs = [(1, 1), (-1, 1), (1, -1), (-1, -1)]
+            for (cx, cy), (dx, dy) in zip(corners, dirs):
+                cv2.line(annotated_frame, (cx, cy), (cx + dx * corner_len, cy), roi_color, corner_thickness)
+                cv2.line(annotated_frame, (cx, cy), (cx, cy + dy * corner_len), roi_color, corner_thickness)
+            # ROI label
+            roi_label  = "!! OUT OF BOUNDS !!" if roi_warning else "ROI"
+            label_color = roi_color
+            font_scale  = 0.85 if roi_warning else 0.7
+            font_thick  = 2
+            (lw, lh), _ = cv2.getTextSize(roi_label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+            cv2.rectangle(annotated_frame, (rx, ry - lh - 10), (rx + lw + 10, ry), (0, 0, 0), -1)
+            cv2.putText(annotated_frame, roi_label, (rx + 5, ry - 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, label_color, font_thick)
             
             if results:
                 

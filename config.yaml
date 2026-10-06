@@ -45,8 +45,4 @@ storage:
 web:
   host: 0.0.0.0
   port: 5000
-roi:
-- 478
-- 397
-- -474
-- -375
+roi:   # Full frame - covers entire camera feed (null = auto full-frame with 10px margin)
