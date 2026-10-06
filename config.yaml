@@ -20,7 +20,7 @@ ai:
     serial_area: 0.1
   default_yolo_confidence: 0.45
   min_defect_area: 200
-  model_path: SSP_Fuel_lid_V5.pt
+  model_path: SSP_fine_tuned_V6.pt
   ocr_confidence_threshold: 0.1
   ocr_fallback_timeout: 3.5
   part_presence:
