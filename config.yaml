@@ -20,6 +20,7 @@ ai:
     serial_area: 0.1
   default_yolo_confidence: 0.45
   min_defect_area: 200
+  defect_merge_distance: 50
   model_path: SSP_fine_tuned_V6.pt
   ocr_confidence_threshold: 0.1
   ocr_fallback_timeout: 3.5
