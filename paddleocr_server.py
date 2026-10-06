@@ -36,8 +36,7 @@ logging.info(f"GPU Acceleration Available: {has_gpu}")
 ocr = PaddleOCR(
     use_angle_cls=False,
     lang='en',
-    use_gpu=has_gpu,
-    show_log=False
+    use_gpu=has_gpu
 )
 logging.info("PaddleOCR ready.")
 

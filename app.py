@@ -1320,6 +1320,50 @@ def video_processing_loop():
                 cv2.rectangle(annotated_frame, (text_x, text_y - text_h - 4), (text_x + text_w, text_y + 2), color, -1)
                 cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
 
+            # --- Draw ROI on Live UI Feed ---
+            roi_cfg = APP_CONFIG.get("roi")
+            rx, ry, rw, rh = roi_cfg if roi_cfg else (0, 0, 0, 0)
+            
+            # Scale ROI to UI resolution
+            if w_ann > UI_WIDTH:
+                rx = int(rx * scale_ann)
+                ry = int(ry * scale_ann)
+                rw = int(rw * scale_ann)
+                rh = int(rh * scale_ann)
+                
+            ui_h, ui_w = annotated_frame.shape[:2]
+            margin = int(10 * scale_ann) if scale_ann < 1.0 else 10
+            if rw <= 0 or rh <= 0:
+                rx, ry, rw, rh = margin, margin, ui_w - (2 * margin), ui_h - (2 * margin)
+                
+            roi_warning = current_cycle.get("roi_warning", False)
+            
+            import time as _time
+            if roi_warning:
+                flash_on = int(_time.time() * 2) % 2 == 0
+                roi_color    = (0, 0, 180) if flash_on else (30, 0, 80)
+                inner_color  = (0, 0, 255) if flash_on else (0, 0, 120)
+                overlay_alpha = 0.35 if flash_on else 0.0
+            else:
+                roi_color    = (0, 255, 0)
+                inner_color  = (255, 255, 255)
+                overlay_alpha = 0.0
+
+            if roi_warning and overlay_alpha > 0:
+                flash_overlay = annotated_frame.copy()
+                cv2.rectangle(flash_overlay, (rx, ry), (rx + rw, ry + rh), (0, 0, 80), -1)
+                cv2.addWeighted(flash_overlay, overlay_alpha, annotated_frame, 1 - overlay_alpha, 0, annotated_frame)
+
+            cv2.rectangle(annotated_frame, (rx, ry), (rx + rw, ry + rh), roi_color, max(2, int(5 * scale_ann)))
+            cv2.rectangle(annotated_frame, (rx + 2, ry + 2), (rx + rw - 2, ry + rh - 2), inner_color, 1)
+            
+            roi_label = "!! OUT OF BOUNDS !!" if roi_warning else "ROI"
+            font_scale = max(0.5, 0.85 * scale_ann) if roi_warning else max(0.4, 0.7 * scale_ann)
+            (lw, lh), _ = cv2.getTextSize(roi_label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 2)
+            cv2.rectangle(annotated_frame, (rx, ry - lh - 6), (rx + lw + 6, ry), (0, 0, 0), -1)
+            cv2.putText(annotated_frame, roi_label, (rx + 3, ry - 3), cv2.FONT_HERSHEY_SIMPLEX, font_scale, roi_color, 2)
+            # ---------------------------------
+
             # Encode annotated frame to JPEG with lower quality for UI performance
             ret2, buffer = cv2.imencode('.jpg', annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
             if ret2:
@@ -1790,7 +1834,8 @@ def yolo_worker_loop():
                             current_cycle["step2_status"] = "OK"
                             active_cycle_data["state"] = "WAITING_BACK"
                             for d in frame_defects:
-                                active_cycle_data["defects_detected"].add(d)
+                                if d != "out_of_bounds":
+                                    active_cycle_data["defects_detected"].add(d)
 
                     else:
                         active_cycle_data["front_missing_frames"] = active_cycle_data.get("front_missing_frames", 0) + 1
@@ -1867,7 +1912,8 @@ def yolo_worker_loop():
                                     
                                     current_cycle["step3_status"] = "OK"
                                     for d in frame_defects:
-                                        active_cycle_data["defects_detected"].add(d)
+                                        if d != "out_of_bounds":
+                                            active_cycle_data["defects_detected"].add(d)
                                     
                                     # Go straight to finalization
                                     active_cycle_data["state"] = "WAITING_REMOVE"
