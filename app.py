@@ -1446,7 +1446,6 @@ def yolo_worker_loop():
                     current_cycle["roi_warning"] = roi_warning
 
                 if any_lid_outside_roi:
-                    boxes = []  # Skip drawing any classes
                     frame_defects.append("out_of_bounds")
                     has_defect_detected = True
 
