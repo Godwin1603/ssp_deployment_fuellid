@@ -1401,49 +1401,60 @@ def yolo_worker_loop():
             has_holes_detected = False
             has_defect_detected = False
             
+            # --- ROI SETUP & DRAWING ---
+            roi_cfg = APP_CONFIG.get("roi")
+            rx, ry, rw, rh = roi_cfg if roi_cfg else (0, 0, 0, 0)
+            ui_scale = w_orig / 480.0 if w_orig > 480 else 1.0
+            rx = int(rx * ui_scale)
+            ry = int(ry * ui_scale)
+            rw = int(rw * ui_scale)
+            rh = int(rh * ui_scale)
+            
+            margin = 10
+            if rw <= 0 or rh <= 0:
+                rx, ry, rw, rh = margin, margin, w_orig - (2 * margin), h_orig - (2 * margin)
+                
+            roi_warning = False
+            any_lid_outside_roi = False
+            
             if results:
                 boxes = results[0].boxes
                 names = results[0].names
                 
-                # --- PRE-CHECK ROI ---
-                roi_cfg = APP_CONFIG.get("roi")
-                rx, ry, rw, rh = roi_cfg if roi_cfg else (0, 0, 0, 0)
-                
-                # The UI sends ROI coordinates scaled down to UI_WIDTH (480)
-                # We must upscale them back to w_orig/h_orig before checking.
-                ui_scale = w_orig / 480.0 if w_orig > 480 else 1.0
-                rx = int(rx * ui_scale)
-                ry = int(ry * ui_scale)
-                rw = int(rw * ui_scale)
-                rh = int(rh * ui_scale)
-                
-                any_lid_outside_roi = False
-                
-                if rw > 0 and rh > 0:
-                    for box in boxes:
-                        cls_id = int(box.cls[0].cpu().item())
-                        class_name = names[cls_id].lower()
-                        conf = float(box.conf[0].cpu().item())
-                        roi_conf_threshold = APP_CONFIG.get("ai", {}).get("roi_confidence_threshold", 0.55)
-                        if conf < roi_conf_threshold:
-                            continue
-                            
-                        if class_name in ["front", "circle_front", "back", "circle_back", "cricle_back"]:
-                            xyxy_resized = box.xyxy[0].cpu().numpy()
-                            x1 = int(xyxy_resized[0] / scale)
-                            y1 = int(xyxy_resized[1] / scale)
-                            x2 = int(xyxy_resized[2] / scale)
-                            y2 = int(xyxy_resized[3] / scale)
-                            
-                            tol = 0
-                            if x1 < rx - tol or y1 < ry - tol or x2 > rx + rw + tol or y2 > ry + rh + tol:
-                                any_lid_outside_roi = True
-                                break
-                                    
+                # Rule: if any panel class box TOUCHES or goes OUTSIDE the ROI
+                PANEL_CLASSES = ["front", "circle_front", "back", "circle_back", "cricle_back"]
+                roi_conf_threshold = APP_CONFIG.get("ai", {}).get("roi_confidence_threshold", 0.55)
+                for box in boxes:
+                    cls_id = int(box.cls[0].cpu().item())
+                    class_name = names[cls_id].lower()
+                    conf = float(box.conf[0].cpu().item())
+                    if conf < roi_conf_threshold:
+                        continue
+                    if class_name in PANEL_CLASSES:
+                        xyxy_resized = box.xyxy[0].cpu().numpy()
+                        bx1 = int(xyxy_resized[0] / scale)
+                        by1 = int(xyxy_resized[1] / scale)
+                        bx2 = int(xyxy_resized[2] / scale)
+                        by2 = int(xyxy_resized[3] / scale)
+                        if (bx1 <= rx or by1 <= ry or
+                            bx2 >= rx + rw or by2 >= ry + rh):
+                            roi_warning = True
+                            any_lid_outside_roi = True
+                            break
+
+                with lock:
+                    current_cycle["roi_warning"] = roi_warning
+
                 if any_lid_outside_roi:
-                    boxes = [] # Skip drawing any classes
+                    boxes = []  # Skip drawing any classes
                     frame_defects.append("out_of_bounds")
                     has_defect_detected = True
+
+            # Draw the ROI boundary on the live feed ALWAYS. Green if safe, Red if part is out of bounds.
+            roi_color = (0, 0, 255) if roi_warning else (0, 255, 0)
+            cv2.rectangle(annotated_frame, (rx, ry), (rx + rw, ry + rh), roi_color, 2)
+            
+            if results:
                 
                 for box in boxes:
                     cls_id = int(box.cls[0].cpu().item())
@@ -1455,7 +1466,7 @@ def yolo_worker_loop():
                         
                     if class_name in ["front", "circle_front"]:
                         has_front_detected = True
-                    elif class_name in ["back", "circle_back", "cricle_back", "serial", "serial_area"]:
+                    elif class_name in ["back", "circle_back", "cricle_back", "serial", "serial_area", "holes"]:
                         has_back_detected = True
                 
                 for box_idx, box in enumerate(boxes):
@@ -1570,6 +1581,11 @@ def yolo_worker_loop():
                         back_box = (x1, y1, x2, y2)
                         back_class = class_name  # Track the actual detected back class
                         
+                    # Feature: Treat serial or holes as back panel if back panel box is missing
+                    if class_name in ["serial", "serial_area", "holes"] and back_class is None:
+                        back_class = "back"
+                        # Do not set back_box to avoid false mismatch triggers on circle vs standard,
+                        # but we still mark back_class to indicate the back was conceptually captured.
                         
             # --- Defect Frame Save ---
             # When defects are detected on the front panel, save the annotated frame once per cycle.
@@ -1751,7 +1767,7 @@ def yolo_worker_loop():
                     current_cycle["instruction"] = "FLIP TO BACK SIDE"
                     current_cycle["instruction_color"] = "blue"
                     
-                    is_back_visible = (back_box is not None) or has_serial_detected
+                    is_back_visible = (back_box is not None) or has_serial_detected or has_holes_detected
                     
                     if is_back_visible and not has_front_detected:
                         # --- Panel Type Mismatch Check ---
@@ -2078,16 +2094,7 @@ def camera_diag():
         diag["frame_dtype"] = None
         diag["frame_channels"] = None
     return jsonify(diag)
-@app.route('/set_roi', methods=['POST'])
-def set_roi():
-    try:
-        data = request.json or {}
-        APP_CONFIG['roi'] = data.get('roi')
-        with open(CONFIG_PATH, 'w') as f:
-            yaml.dump(APP_CONFIG, f)
-        return jsonify({"status": "success"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+
 
 @app.route('/status')
 def status():
@@ -2096,6 +2103,7 @@ def status():
     resp["is_processing"] = is_processing
     resp["capture_state"] = active_cycle_data.get("state", "WAITING_FRONT")
     resp["roi"] = APP_CONFIG.get("roi")
+    resp["roi_warning"] = current_cycle.get("roi_warning", False)
     return jsonify(resp)
 
 if __name__ == '__main__':
