@@ -1410,11 +1410,11 @@ def yolo_worker_loop():
             
         h_orig, w_orig = frame_to_process.shape[:2]
         
-        # Resize frame for faster YOLO inference (user trained at 432x432, 448 is closest stride-32 multiple)
+        # Resize frame for faster YOLO inference (user trained at 432x432)
         scale = 1.0
-        if w_orig > 448:
-            scale = 448 / w_orig
-            frame_resized = cv2.resize(frame_to_process, (448, int(h_orig * scale)))
+        if w_orig > 432:
+            scale = 432 / w_orig
+            frame_resized = cv2.resize(frame_to_process, (432, int(h_orig * scale)))
         else:
             frame_resized = frame_to_process.copy()
             
@@ -1423,7 +1423,8 @@ def yolo_worker_loop():
             min_thresh = min(CLASS_CONF_THRESHOLDS.values()) if CLASS_CONF_THRESHOLDS else YOLO_CONF_THRESHOLD
             run_thresh = min(float(min_thresh), float(YOLO_CONF_THRESHOLD))
             
-            results = YOLO_MODEL(frame_resized, verbose=False, conf=run_thresh, task='segment', imgsz=448)
+            # Note: YOLO internally pads 432 to 448 because the architecture requires multiples of 32
+            results = YOLO_MODEL(frame_resized, verbose=False, conf=run_thresh, task='segment', imgsz=432)
             new_detections = []
             frame_holes = 0
             frame_defects = []
