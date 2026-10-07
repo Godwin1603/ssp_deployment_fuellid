@@ -1484,11 +1484,7 @@ def yolo_worker_loop():
                             bx2 = int(xyxy_resized[2] / scale)
                             by2 = int(xyxy_resized[3] / scale)
                             
-                            bw = bx2 - bx1
-                            allowed_margin = int(bw * 0.10)
-                            
-                            if (bx1 < rx - allowed_margin or by1 <= ry or
-                                bx2 > rx + rw + allowed_margin or by2 >= ry + rh):
+                            if (bx1 < rx or by1 < ry or bx2 > rx + rw or by2 > ry + rh):
                                 roi_warning = True
                                 any_lid_outside_roi = True
                                 break
