@@ -1296,16 +1296,17 @@ def video_processing_loop():
                 class_name = det["class_name"]
                 
                 color = (0, 255, 0)
+                text_color = (0, 0, 0) # default black text
+                
                 if class_name in ["front", "circle_front"]:
                     color = (0, 165, 255)
                 elif class_name in ["back", "circle_back", "cricle_back"]:
                     color = (255, 0, 255)
                 elif class_name in ["serial", "serial_area"]:
                     color = (255, 255, 0)
-                elif class_name in ["dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
-                    color = (0, 0, 255)
-                elif class_name == "line_mark":
-                    color = (0, 255, 255)
+                elif class_name in ["dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend", "line_mark"]:
+                    color = (0, 0, 255) # Red box
+                    text_color = (255, 255, 255) # White text for defects
 
                 if class_name in ["line_mark", "dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"] and det.get("mask") is not None:
                     pts = np.array(det["mask"], np.int32)
@@ -1322,7 +1323,7 @@ def video_processing_loop():
                 text_x = x1
                 text_y = max(y1 - 5, text_h + 5)
                 cv2.rectangle(annotated_frame, (text_x, text_y - text_h - 4), (text_x + text_w, text_y + 2), color, -1)
-                cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 2)
 
             # --- Draw ROI on Live UI Feed ---
             roi_cfg = APP_CONFIG.get("roi")
@@ -1632,11 +1633,13 @@ def yolo_worker_loop():
                     
                     # Draw annotations for saved images
                     color = (0, 255, 0)
+                    text_color = (0, 0, 0) # default black text
                     if class_name in ["front", "circle_front"]: color = (0, 165, 255)
                     elif class_name in ["back", "circle_back", "cricle_back"]: color = (255, 0, 255)
                     elif class_name in ["serial", "serial_area"]: color = (255, 255, 0)
-                    elif class_name in ["dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]: color = (0, 0, 255)
-                    elif class_name == "line_mark": color = (0, 255, 255)
+                    elif class_name in ["dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend", "line_mark"]: 
+                        color = (0, 0, 255) # Red box
+                        text_color = (255, 255, 255) # White text for defects
                     
                     if class_name in ["line_mark", "dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
                         if mask_polygon is not None:
@@ -1655,7 +1658,7 @@ def yolo_worker_loop():
                     text_x = x1
                     text_y = max(y1 - 10, text_h + 10)
                     cv2.rectangle(annotated_frame, (text_x, text_y - text_h - 4), (text_x + text_w, text_y + 2), color, -1)
-                    cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                    cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
                     
                     # Track sub-features for fallback
                     if class_name in ["holes", "serial", "serial_area"]:
