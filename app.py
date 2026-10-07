@@ -2122,7 +2122,7 @@ def gen_frames():
 # -------------------------------
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', roi_tolerance=ROI_SIDE_TOLERANCE_PCT)
 
 @app.route('/video_feed')
 def video_feed():
