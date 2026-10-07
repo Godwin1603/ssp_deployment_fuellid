@@ -170,6 +170,7 @@ CLASS_CONF_THRESHOLDS = APP_CONFIG.get("ai", {}).get("class_confidences", {})
 # ROI Side Tolerance: % of frame width the bounding box can stick out on left/right before alarm
 # 0 = any edge touch triggers, higher = more tolerance. Adjustable live via UI.
 ROI_SIDE_TOLERANCE_PCT = 0
+MOCK_BBOX_PCT = None  # Format: [x1_pct, y1_pct, x2_pct, y2_pct]
   # Minimum YOLO confidence (0.0 - 1.0). Lower = more detections, Higher = stricter.
 
 # Global lock for thread safety (using RLock to prevent self-deadlocks on nested acquisitions)
@@ -1328,6 +1329,17 @@ def video_processing_loop():
                 cv2.rectangle(annotated_frame, (text_x, text_y - text_h - 4), (text_x + text_w, text_y + 2), color, -1)
                 cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 2)
 
+            # --- Draw MOCK Box if present ---
+            if MOCK_BBOX_PCT is not None:
+                mbx1 = int(MOCK_BBOX_PCT[0] * w_ann)
+                mby1 = int(MOCK_BBOX_PCT[1] * h_ann)
+                mbx2 = int(MOCK_BBOX_PCT[2] * w_ann)
+                mby2 = int(MOCK_BBOX_PCT[3] * h_ann)
+                cv2.rectangle(annotated_frame, (mbx1, mby1), (mbx2, mby2), (255, 0, 255), max(2, int(3 * scale_ann)))
+                (tw, th), _ = cv2.getTextSize("MOCK", cv2.FONT_HERSHEY_SIMPLEX, 0.7 * scale_ann, max(1, int(2 * scale_ann)))
+                cv2.rectangle(annotated_frame, (mbx1, mby1 - th - 5), (mbx1 + tw, mby1), (255, 0, 255), -1)
+                cv2.putText(annotated_frame, "MOCK", (mbx1, mby1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.7 * scale_ann, (255, 255, 255), max(1, int(2 * scale_ann)))
+
             # --- Draw ROI on Live UI Feed ---
             roi_cfg = APP_CONFIG.get("roi")
             rx, ry, rw, rh = roi_cfg if roi_cfg else (0, 0, 0, 0)
@@ -1505,6 +1517,24 @@ def yolo_worker_loop():
                                 roi_warning = True
                                 any_lid_outside_roi = True
                                 break
+
+                # OVERRIDE WITH MOCK BOX IF IT EXISTS
+                if MOCK_BBOX_PCT is not None:
+                    roi_warning = False
+                    any_lid_outside_roi = False
+                    
+                    mbx1 = int(MOCK_BBOX_PCT[0] * w_orig)
+                    mby1 = int(MOCK_BBOX_PCT[1] * h_orig)
+                    mbx2 = int(MOCK_BBOX_PCT[2] * w_orig)
+                    mby2 = int(MOCK_BBOX_PCT[3] * h_orig)
+                    
+                    side_tol = int(w_orig * ROI_SIDE_TOLERANCE_PCT / 100)
+                    if (mbx1 < rx - side_tol or
+                        mbx2 > rx + rw + side_tol or
+                        mby1 < ry or
+                        mby2 > ry + rh):
+                        roi_warning = True
+                        any_lid_outside_roi = True
 
                 with lock:
                     current_cycle["roi_warning"] = roi_warning
@@ -2251,6 +2281,16 @@ def roi_tolerance():
         ROI_SIDE_TOLERANCE_PCT = pct
         return jsonify({"success": True, "pct": ROI_SIDE_TOLERANCE_PCT})
     return jsonify({"pct": ROI_SIDE_TOLERANCE_PCT})
+
+@app.route('/api/mock_bbox', methods=['POST'])
+def mock_bbox_api():
+    global MOCK_BBOX_PCT
+    data = request.get_json()
+    if data and "bbox" in data:
+        MOCK_BBOX_PCT = data["bbox"]
+    else:
+        MOCK_BBOX_PCT = None
+    return jsonify({"success": True})
 
 if __name__ == '__main__':
     # Initialize workspace folders
