@@ -518,20 +518,7 @@ def finalize_report_and_rename(c_data):
                 else:
                     print(f"[Finalize] Recheck succeeded: {active_cycle_data['serial_number']}")
 
-        # Now that we have the final serial number, instruct operator to remove the plate
-        with lock:
-            current_cycle["instruction"] = "REMOVE THE PLATE"
-            current_cycle["instruction_color"] = "red"
-            current_cycle["status"] = "Saving report..."
-        
-        temp_dir = active_cycle_data["temp_folder"]
-        serial = active_cycle_data["serial_number"]
-        front = active_cycle_data["front_path"]
-        back = active_cycle_data["back_path"]
-        conf = active_cycle_data["ocr_confidence"]
-        defect_frame = active_cycle_data.get("defect_frame_path")  # Annotated frame with defect markings
-        
-        # Read defects and verify holes
+        # Read defects and verify holes to determine PASS/FAIL early
         with lock:
             defects = list(active_cycle_data["defects_detected"])
             if active_cycle_data["max_holes_detected"] < 2:
@@ -540,6 +527,23 @@ def finalize_report_and_rename(c_data):
                 defects.append("serial_missing")
             current_cycle["defects"] = defects
         status = "FAIL" if defects else "PASS"
+
+        # Now that we have the final serial number and pass/fail status, instruct operator
+        with lock:
+            if status == "PASS":
+                current_cycle["instruction"] = "OK - REMOVE THE PLATE"
+                current_cycle["instruction_color"] = "green"
+            else:
+                current_cycle["instruction"] = "NG - REMOVE THE PLATE"
+                current_cycle["instruction_color"] = "red"
+            current_cycle["status"] = "Saving report..."
+        
+        temp_dir = active_cycle_data["temp_folder"]
+        serial = active_cycle_data["serial_number"]
+        front = active_cycle_data["front_path"]
+        back = active_cycle_data["back_path"]
+        conf = active_cycle_data["ocr_confidence"]
+        defect_frame = active_cycle_data.get("defect_frame_path")  # Annotated frame with defect markings
         
         # Check folder structure and resolve if serial folder already exists
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -1467,8 +1471,8 @@ def yolo_worker_loop():
                 names = results[0].names
                 
                 # Rule: if any panel class box TOUCHES or goes OUTSIDE the ROI
-                # Only activate ROI trigger if Waiting for Fuel Lid (step1_status) is OK
-                if current_cycle.get("step1_status") == "OK":
+                # Only activate ROI trigger if Waiting for Fuel Lid (step1_status) is OK, and we aren't in the middle of removing it
+                if current_cycle.get("step1_status") == "OK" and state != "WAITING_REMOVE":
                     PANEL_CLASSES = ["front", "circle_front", "back", "circle_back", "cricle_back"]
                     roi_conf_threshold = APP_CONFIG.get("ai", {}).get("roi_confidence_threshold", 0.55)
                     for box in boxes:
@@ -1484,7 +1488,19 @@ def yolo_worker_loop():
                             bx2 = int(xyxy_resized[2] / scale)
                             by2 = int(xyxy_resized[3] / scale)
                             
-                            if (bx1 < rx or by1 < ry or bx2 > rx + rw or by2 > ry + rh):
+                            # IDEA 1: Bounding Box Shrink
+                            # Trim 5% off the AI bounding box edges to ignore YOLO's invisible padding
+                            bw = bx2 - bx1
+                            bh = by2 - by1
+                            shrink_x = int(bw * 0.05)
+                            shrink_y = int(bh * 0.05)
+                            
+                            test_x1 = bx1 + shrink_x
+                            test_y1 = by1 + shrink_y
+                            test_x2 = bx2 - shrink_x
+                            test_y2 = by2 - shrink_y
+                            
+                            if (test_x1 < rx or test_y1 < ry or test_x2 > rx + rw or test_y2 > ry + rh):
                                 roi_warning = True
                                 any_lid_outside_roi = True
                                 break
