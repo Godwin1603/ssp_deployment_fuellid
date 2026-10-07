@@ -12,7 +12,7 @@ ai:
     hole_spec_error: 0.90 
     # --- Defect classes ---
     bulge: 0.50
-    damage: 0.40
+    damage: 0.1
     dent: 0.70
     flange_bend: 0.60
     flange_cut: 0.40
