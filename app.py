@@ -1424,7 +1424,7 @@ def yolo_worker_loop():
             run_thresh = min(float(min_thresh), float(YOLO_CONF_THRESHOLD))
             
             # Note: YOLO internally pads 432 to 448 because the architecture requires multiples of 32
-            results = YOLO_MODEL(frame_resized, verbose=False, conf=run_thresh, task='segment', imgsz=432)
+            results = YOLO_MODEL(frame_resized, verbose=False, conf=run_thresh, imgsz=432)
             new_detections = []
             frame_holes = 0
             frame_defects = []

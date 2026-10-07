@@ -23,7 +23,7 @@ ai:
     # --- OCR classes ---
     serial: 0.10
     serial_area: 0.10
-  default_yolo_confidence: 0.35
+  default_yolo_confidence: 0.10
   min_defect_area: 200
   defect_merge_distance: 50
   model_path: best.pt
