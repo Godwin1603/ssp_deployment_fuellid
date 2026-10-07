@@ -169,7 +169,7 @@ YOLO_CONF_THRESHOLD = APP_CONFIG.get("ai", {}).get("default_yolo_confidence", 0.
 CLASS_CONF_THRESHOLDS = APP_CONFIG.get("ai", {}).get("class_confidences", {})
 # ROI Side Tolerance: % of frame width the bounding box can stick out on left/right before alarm
 # 0 = any edge touch triggers, higher = more tolerance. Adjustable live via UI.
-ROI_SIDE_TOLERANCE_PCT = 0
+ROI_SIDE_TOLERANCE_PCT = APP_CONFIG.get("ai", {}).get("roi_side_tolerance_pct", 0)
 MOCK_BBOX_PCT = None  # Format: [x1_pct, y1_pct, x2_pct, y2_pct]
   # Minimum YOLO confidence (0.0 - 1.0). Lower = more detections, Higher = stricter.
 
@@ -2279,6 +2279,18 @@ def roi_tolerance():
         pct = float(data.get("pct", 0))
         pct = max(0, min(50, pct))  # Clamp between 0% and 50%
         ROI_SIDE_TOLERANCE_PCT = pct
+        
+        # Save to config.yaml
+        if "ai" not in APP_CONFIG:
+            APP_CONFIG["ai"] = {}
+        APP_CONFIG["ai"]["roi_side_tolerance_pct"] = pct
+        try:
+            with open(CONFIG_PATH, "w") as f:
+                yaml.dump(APP_CONFIG, f)
+            logger.info(f"Saved ROI_SIDE_TOLERANCE_PCT={pct} to config.yaml")
+        except Exception as e:
+            logger.error(f"Failed to save ROI tolerance to config: {e}")
+            
         return jsonify({"success": True, "pct": ROI_SIDE_TOLERANCE_PCT})
     return jsonify({"pct": ROI_SIDE_TOLERANCE_PCT})
 
