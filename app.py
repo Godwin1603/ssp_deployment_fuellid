@@ -1845,8 +1845,15 @@ def yolo_worker_loop():
                     current_cycle["instruction_color"] = "blue"
                     
                     if front_box and not has_back_detected:
-                        if active_cycle_data["temp_folder"] is None:
-                            today_str = datetime.now().strftime("%Y-%m-%d")
+                        if roi_warning:
+                            active_cycle_data["front_frames_count"] = 0
+                            active_cycle_data["front_first_seen_time"] = None
+                            current_cycle["status"] = "Part Out of Bounds!"
+                            current_cycle["instruction"] = "PLACE PROPERLY INSIDE FRAME"
+                            current_cycle["instruction_color"] = "red"
+                        else:
+                            if active_cycle_data["temp_folder"] is None:
+                                today_str = datetime.now().strftime("%Y-%m-%d")
                             timestamp = datetime.now().strftime("%H%M%S")
                             temp_path = os.path.join("fuel_door_data", today_str, f"temp_capture_{timestamp}")
                             os.makedirs(temp_path, exist_ok=True)
@@ -1902,77 +1909,84 @@ def yolo_worker_loop():
                     is_back_visible = (back_box is not None) or has_serial_detected or has_holes_detected
                     
                     if is_back_visible and not has_front_detected:
-                        # --- Panel Type Mismatch Check ---
-                        # Only run when the back panel itself (not just serial/holes sub-features) is detected
-                        front_type = active_cycle_data.get("front_type")
-                        is_mismatched = False
-                        if back_box is not None and front_type is not None:
-                            if front_type == "standard" and back_class in ["circle_back", "cricle_back"]:
-                                is_mismatched = True
-                            elif front_type == "circle" and back_class == "back":
-                                is_mismatched = True
-
-                        if is_mismatched:
-                            # Wrong part type placed — alert operator and block capture
-                            expected = "STANDARD BACK" if front_type == "standard" else "CIRCLE BACK"
-                            logger.warning(f"[Mismatch] Front type='{front_type}' but detected back_class='{back_class}'. Blocking capture.")
-                            current_cycle["status"] = "Part Type Mismatch!"
-                            current_cycle["instruction"] = "PLACE CORRECT PART"
-                            current_cycle["instruction_color"] = "red"
-                            # Reset back-stability counters so capture does not proceed
+                        if roi_warning:
                             active_cycle_data["back_frames_count"] = 0
                             active_cycle_data["back_first_seen_time"] = None
+                            current_cycle["status"] = "Part Out of Bounds!"
+                            current_cycle["instruction"] = "PLACE PROPERLY INSIDE FRAME"
+                            current_cycle["instruction_color"] = "red"
                         else:
-                            # Correct panel (or only sub-features visible) — proceed normally
-                            # Determine a center for movement tracking
-                            if back_box:
-                                cx = (back_box[0] + back_box[2]) / 2
-                                cy = (back_box[1] + back_box[3]) / 2
-                            elif len(sub_feature_boxes) > 0:
-                                cx = sum([b[0] + b[2] for b in sub_feature_boxes]) / (2 * len(sub_feature_boxes))
-                                cy = sum([b[1] + b[3] for b in sub_feature_boxes]) / (2 * len(sub_feature_boxes))
-                            else:
-                                cx, cy = w_orig / 2, h_orig / 2
-                                
-                            prev_cx, prev_cy = active_cycle_data.get("back_box_center") or (cx, cy)
-                            dist = ((cx - prev_cx)**2 + (cy - prev_cy)**2)**0.5
-                            
-                            if dist > 50:
+                            # --- Panel Type Mismatch Check ---
+                            # Only run when the back panel itself (not just serial/holes sub-features) is detected
+                            front_type = active_cycle_data.get("front_type")
+                            is_mismatched = False
+                            if back_box is not None and front_type is not None:
+                                if front_type == "standard" and back_class in ["circle_back", "cricle_back"]:
+                                    is_mismatched = True
+                                elif front_type == "circle" and back_class == "back":
+                                    is_mismatched = True
+
+                            if is_mismatched:
+                                # Wrong part type placed — alert operator and block capture
+                                expected = "STANDARD BACK" if front_type == "standard" else "CIRCLE BACK"
+                                logger.warning(f"[Mismatch] Front type='{front_type}' but detected back_class='{back_class}'. Blocking capture.")
+                                current_cycle["status"] = "Part Type Mismatch!"
+                                current_cycle["instruction"] = "PLACE CORRECT PART"
+                                current_cycle["instruction_color"] = "red"
+                                # Reset back-stability counters so capture does not proceed
                                 active_cycle_data["back_frames_count"] = 0
                                 active_cycle_data["back_first_seen_time"] = None
-                                
-                            active_cycle_data["back_box_center"] = (cx, cy)
-                            active_cycle_data["back_frames_count"] += 1
-                            
-                            if active_cycle_data.get("back_first_seen_time") is None:
-                                active_cycle_data["back_first_seen_time"] = time.time()
-                                
-                            time_stable = time.time() - active_cycle_data["back_first_seen_time"]
-                            
-                            ocr_done = active_cycle_data.get("serial_number") is not None
-                            ocr_start = active_cycle_data.get("ocr_start_time")
-                            ocr_timeout = (ocr_start is not None) and (time.time() - ocr_start > 5.0)
-                            
-                            if time_stable >= 0.0 or ocr_done:
-                                # Delay the transition to finalization until the OCR thread has actually successfully completed or timed out
-                                if ocr_done or ocr_timeout:
-                                    # Save full annotated image without cropping
-                                    full_raw = frame_to_process.copy()
-                                    back_file = os.path.join(active_cycle_data["temp_folder"], "back.jpg")
-                                    cv2.imwrite(back_file, full_raw, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                                    active_cycle_data["back_path"] = back_file
-                                    
-                                    current_cycle["step3_status"] = "OK"
-                                    for d in frame_defects:
-                                        if d != "out_of_bounds":
-                                            active_cycle_data["defects_detected"].add(d)
-                                    
-                                    # Go straight to finalization
-                                    active_cycle_data["state"] = "WAITING_REMOVE"
-                                    check_and_finalize_cycle(active_cycle_data)
+                            else:
+                                # Correct panel (or only sub-features visible) — proceed normally
+                                # Determine a center for movement tracking
+                                if back_box:
+                                    cx = (back_box[0] + back_box[2]) / 2
+                                    cy = (back_box[1] + back_box[3]) / 2
+                                elif len(sub_feature_boxes) > 0:
+                                    cx = sum([b[0] + b[2] for b in sub_feature_boxes]) / (2 * len(sub_feature_boxes))
+                                    cy = sum([b[1] + b[3] for b in sub_feature_boxes]) / (2 * len(sub_feature_boxes))
                                 else:
-                                    current_cycle["instruction"] = "DETECTING SERIAL NUMBER..."
-                                    active_cycle_data["back_frames_count"] = 1 # Keep it below threshold until serial is seen
+                                    cx, cy = w_orig / 2, h_orig / 2
+                                
+                                prev_cx, prev_cy = active_cycle_data.get("back_box_center") or (cx, cy)
+                                dist = ((cx - prev_cx)**2 + (cy - prev_cy)**2)**0.5
+                            
+                                if dist > 50:
+                                    active_cycle_data["back_frames_count"] = 0
+                                    active_cycle_data["back_first_seen_time"] = None
+                                
+                                active_cycle_data["back_box_center"] = (cx, cy)
+                                active_cycle_data["back_frames_count"] += 1
+                            
+                                if active_cycle_data.get("back_first_seen_time") is None:
+                                    active_cycle_data["back_first_seen_time"] = time.time()
+                                
+                                time_stable = time.time() - active_cycle_data["back_first_seen_time"]
+                            
+                                ocr_done = active_cycle_data.get("serial_number") is not None
+                                ocr_start = active_cycle_data.get("ocr_start_time")
+                                ocr_timeout = (ocr_start is not None) and (time.time() - ocr_start > 5.0)
+                            
+                                if time_stable >= 0.0 or ocr_done:
+                                    # Delay the transition to finalization until the OCR thread has actually successfully completed or timed out
+                                    if ocr_done or ocr_timeout:
+                                        # Save full annotated image without cropping
+                                        full_raw = frame_to_process.copy()
+                                        back_file = os.path.join(active_cycle_data["temp_folder"], "back.jpg")
+                                        cv2.imwrite(back_file, full_raw, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                                        active_cycle_data["back_path"] = back_file
+                                    
+                                        current_cycle["step3_status"] = "OK"
+                                        for d in frame_defects:
+                                            if d != "out_of_bounds":
+                                                active_cycle_data["defects_detected"].add(d)
+                                    
+                                        # Go straight to finalization
+                                        active_cycle_data["state"] = "WAITING_REMOVE"
+                                        check_and_finalize_cycle(active_cycle_data)
+                                    else:
+                                        current_cycle["instruction"] = "DETECTING SERIAL NUMBER..."
+                                        active_cycle_data["back_frames_count"] = 1 # Keep it below threshold until serial is seen
                     else:
                         active_cycle_data["back_frames_count"] = 0
                         active_cycle_data["back_first_seen_time"] = None
