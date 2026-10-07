@@ -1467,25 +1467,27 @@ def yolo_worker_loop():
                 names = results[0].names
                 
                 # Rule: if any panel class box TOUCHES or goes OUTSIDE the ROI
-                PANEL_CLASSES = ["front", "circle_front", "back", "circle_back", "cricle_back"]
-                roi_conf_threshold = APP_CONFIG.get("ai", {}).get("roi_confidence_threshold", 0.55)
-                for box in boxes:
-                    cls_id = int(box.cls[0].cpu().item())
-                    class_name = names[cls_id].lower()
-                    conf = float(box.conf[0].cpu().item())
-                    if conf < roi_conf_threshold:
-                        continue
-                    if class_name in PANEL_CLASSES:
-                        xyxy_resized = box.xyxy[0].cpu().numpy()
-                        bx1 = int(xyxy_resized[0] / scale)
-                        by1 = int(xyxy_resized[1] / scale)
-                        bx2 = int(xyxy_resized[2] / scale)
-                        by2 = int(xyxy_resized[3] / scale)
-                        if (bx1 <= rx or by1 <= ry or
-                            bx2 >= rx + rw or by2 >= ry + rh):
-                            roi_warning = True
-                            any_lid_outside_roi = True
-                            break
+                # Only activate ROI trigger if Waiting for Fuel Lid (step1_status) is OK
+                if current_cycle.get("step1_status") == "OK":
+                    PANEL_CLASSES = ["front", "circle_front", "back", "circle_back", "cricle_back"]
+                    roi_conf_threshold = APP_CONFIG.get("ai", {}).get("roi_confidence_threshold", 0.55)
+                    for box in boxes:
+                        cls_id = int(box.cls[0].cpu().item())
+                        class_name = names[cls_id].lower()
+                        conf = float(box.conf[0].cpu().item())
+                        if conf < roi_conf_threshold:
+                            continue
+                        if class_name in PANEL_CLASSES:
+                            xyxy_resized = box.xyxy[0].cpu().numpy()
+                            bx1 = int(xyxy_resized[0] / scale)
+                            by1 = int(xyxy_resized[1] / scale)
+                            bx2 = int(xyxy_resized[2] / scale)
+                            by2 = int(xyxy_resized[3] / scale)
+                            if (bx1 <= rx or by1 <= ry or
+                                bx2 >= rx + rw or by2 >= ry + rh):
+                                roi_warning = True
+                                any_lid_outside_roi = True
+                                break
 
                 with lock:
                     current_cycle["roi_warning"] = roi_warning
