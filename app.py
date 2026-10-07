@@ -1313,12 +1313,12 @@ def video_processing_loop():
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
 
                 # Draw label without confidence percentage
-                label = f"{class_name}"
+                label = class_name.replace("_", " ").title()
                 (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
                 text_x = x1
                 text_y = max(y1 - 5, text_h + 5)
                 cv2.rectangle(annotated_frame, (text_x, text_y - text_h - 4), (text_x + text_w, text_y + 2), color, -1)
-                cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
             # --- Draw ROI on Live UI Feed ---
             roi_cfg = APP_CONFIG.get("roi")
@@ -1638,12 +1638,12 @@ def yolo_worker_loop():
                     else:
                         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 3)
                         
-                    label = f"{class_name}"
+                    label = class_name.replace("_", " ").title()
                     (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
                     text_x = x1
                     text_y = max(y1 - 10, text_h + 10)
                     cv2.rectangle(annotated_frame, (text_x, text_y - text_h - 4), (text_x + text_w, text_y + 2), color, -1)
-                    cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+                    cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                     
                     # Track sub-features for fallback
                     if class_name in ["holes", "serial", "serial_area"]:
@@ -1959,15 +1959,46 @@ def yolo_worker_loop():
                 # Update UI data outside state transitions
                 if state in ["WAITING_FRONT", "WAITING_BACK", "WAITING_REMOVE"]:
                     current_cycle["holes_count"] = min(2, max(current_cycle["holes_count"], frame_holes))
-                    # Continuously accumulate defects from every frame (not just at capture time)
-                    for d in frame_defects:
-                        if d != "out_of_bounds":
-                            active_cycle_data["defects_detected"].add(d)
+                    # --- Dynamic Defect Tracker & Freezing Engine ---
+                    tracker = active_cycle_data.get("defect_tracker", {})
+                    detected_classes = set(d for d in frame_defects if d != "out_of_bounds")
                     
+                    for d in detected_classes:
+                        if d not in tracker:
+                            tracker[d] = {"hit_count": 1, "miss_count": 0, "status": "PENDING"}
+                        else:
+                            tracker[d]["hit_count"] += 1
+                            tracker[d]["miss_count"] = 0
+                        
+                        if tracker[d]["hit_count"] >= 3:
+                            tracker[d]["status"] = "CONFIRMED"
+                            active_cycle_data["defects_detected"].add(d)
+
+                    to_remove = []
+                    for d, info in tracker.items():
+                        if d not in detected_classes:
+                            info["miss_count"] += 1
+                            if info["status"] == "PENDING" and info["miss_count"] >= 2:
+                                to_remove.append(d)
+                            elif info["status"] == "CONFIRMED" and info["miss_count"] >= 5:
+                                to_remove.append(d)
+                                active_cycle_data["defects_detected"].discard(d)
+                    
+                    for d in to_remove:
+                        del tracker[d]
+                    
+                    active_cycle_data["defect_tracker"] = tracker
+                    # ------------------------------------------------
+
                     current_defects = list(active_cycle_data["defects_detected"])
                     if "out_of_bounds" in frame_defects:
                         current_defects.append("out_of_bounds")
                     current_cycle["defects"] = current_defects
+                    
+                    # Override instruction if defect is confirmed (triggers UI flash)
+                    if active_cycle_data["defects_detected"] and state != "WAITING_REMOVE":
+                        current_cycle["instruction_color"] = "red"
+                        current_cycle["result"] = "NG"
                     if active_cycle_data["temp_folder"] is not None:
                         active_cycle_data["max_holes_detected"] = min(2, max(active_cycle_data["max_holes_detected"], frame_holes))
             if needs_reset:
