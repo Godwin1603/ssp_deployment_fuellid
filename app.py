@@ -167,6 +167,9 @@ OCR_ENGINE = None
 # -------------------------------
 YOLO_CONF_THRESHOLD = APP_CONFIG.get("ai", {}).get("default_yolo_confidence", 0.15)
 CLASS_CONF_THRESHOLDS = APP_CONFIG.get("ai", {}).get("class_confidences", {})
+# ROI Side Tolerance: % of frame width the bounding box can stick out on left/right before alarm
+# 0 = any edge touch triggers, higher = more tolerance. Adjustable live via UI.
+ROI_SIDE_TOLERANCE_PCT = 0
   # Minimum YOLO confidence (0.0 - 1.0). Lower = more detections, Higher = stricter.
 
 # Global lock for thread safety (using RLock to prevent self-deadlocks on nested acquisitions)
@@ -1489,19 +1492,16 @@ def yolo_worker_loop():
                             bx2 = int(xyxy_resized[2] / scale)
                             by2 = int(xyxy_resized[3] / scale)
                             
-                            # IDEA 1: Bounding Box Shrink
-                            # Trim 5% off the AI bounding box edges to ignore YOLO's invisible padding
-                            bw = bx2 - bx1
-                            bh = by2 - by1
-                            shrink_x = int(bw * 0.05)
-                            shrink_y = int(bh * 0.05)
+                            # ROI BOUNDARY DETECTION (WITH ADJUSTABLE SIDE TOLERANCE)
+                            # The green box is at rx, ry.
+                            # We mathematically expand the invisible alarm trigger line outwards 
+                            # on the left and right by ROI_SIDE_TOLERANCE_PCT.
+                            side_tol = int(w_orig * ROI_SIDE_TOLERANCE_PCT / 100)
                             
-                            test_x1 = bx1 + shrink_x
-                            test_y1 = by1 + shrink_y
-                            test_x2 = bx2 - shrink_x
-                            test_y2 = by2 - shrink_y
-                            
-                            if (test_x1 < rx or test_y1 < ry or test_x2 > rx + rw or test_y2 > ry + rh):
+                            if (bx1 < rx - side_tol or
+                                bx2 > rx + rw + side_tol or
+                                by1 < ry or
+                                by2 > ry + rh):
                                 roi_warning = True
                                 any_lid_outside_roi = True
                                 break
@@ -2238,7 +2238,19 @@ def status():
     resp["capture_state"] = active_cycle_data.get("state", "WAITING_FRONT")
     resp["roi"] = APP_CONFIG.get("roi")
     resp["roi_warning"] = current_cycle.get("roi_warning", False)
+    resp["roi_side_tolerance_pct"] = ROI_SIDE_TOLERANCE_PCT
     return jsonify(resp)
+
+@app.route('/api/roi_tolerance', methods=['GET', 'POST'])
+def roi_tolerance():
+    global ROI_SIDE_TOLERANCE_PCT
+    if request.method == 'POST':
+        data = request.get_json()
+        pct = float(data.get("pct", 0))
+        pct = max(0, min(50, pct))  # Clamp between 0% and 50%
+        ROI_SIDE_TOLERANCE_PCT = pct
+        return jsonify({"success": True, "pct": ROI_SIDE_TOLERANCE_PCT})
+    return jsonify({"pct": ROI_SIDE_TOLERANCE_PCT})
 
 if __name__ == '__main__':
     # Initialize workspace folders
