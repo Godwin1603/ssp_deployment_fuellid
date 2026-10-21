@@ -4,3 +4,5 @@ logs/
 fuel_door_data/
 nssm.exe
 *.pt
+*.zip
+roi_preview.jpg

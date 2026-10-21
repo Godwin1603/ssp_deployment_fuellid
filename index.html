@@ -1031,7 +1031,10 @@
                     <div class="status-main">
                         <h2 id="inspect-status">Awaiting Camera</h2>
                     </div>
-                    <div class="cycle-badge" id="cycle-badge">CYCLE #001</div>
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                        <div class="cycle-badge" id="part-badge" style="background: #e0e7ff; color: #3730a3; font-size: 11px; padding: 2px 7px;">DOOR: POLYGON</div>
+                        <div class="cycle-badge" id="cycle-badge">CYCLE #001</div>
+                    </div>
                 </div>
             </div>
 
@@ -1147,6 +1150,20 @@
             </div>
             
             <div class="config-body">
+                <!-- Part Model Selection -->
+                <div style="padding: 14px; margin-bottom: 12px; background: white; border: 1px solid var(--dark-border); border-radius: 8px;">
+                    <div style="font-size: 11px; font-weight: 700; color: var(--text-main); margin-bottom: 8px; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
+                        <span>Part Model</span>
+                        <span id="active-model-indicator" style="font-size: 11px; color: #1e40af; background: #dbeafe; font-weight: bold; padding: 2px 6px; border-radius: 4px;">AUTO</span>
+                    </div>
+                    <div style="font-size: 11px; font-weight: 600; color: var(--text-main); margin-bottom: 4px;">
+                        Active Model: <code id="active-model-filename" style="color: var(--accent-blue); font-size: 11px;">Auto-detecting...</code>
+                    </div>
+                    <div style="font-size: 10px; color: var(--text-muted); line-height: 1.3;">
+                        Automatically identifies Circle, Polygon, or Rectangle based on part geometry when placed on the tray.
+                    </div>
+                </div>
+
                 <!-- Global AI Settings -->
                 <div style="padding: 14px; margin-bottom: 12px; background: white; border: 1px solid var(--dark-border); border-radius: 8px;">
                     <div style="font-size: 11px; font-weight: 700; color: var(--text-main); margin-bottom: 8px; text-transform: uppercase;">Alarm Settings</div>
@@ -1638,6 +1655,58 @@
                 document.getElementById('cycle-badge').textContent = 'CYCLE ' + data.cycle_number;
                 document.getElementById('trace-value').textContent = data.serial;
                 document.getElementById('trace-sub').textContent = 'OCR confidence: ' + data.confidence;
+
+                // Update Part Model badge
+                const partBadge = document.getElementById('part-badge');
+                const lockedType = data.locked_part_type || (data.part_type !== 'AUTO' ? data.part_type : null);
+                if (partBadge) {
+                    if (lockedType) {
+                        const displayName = lockedType === 'POLYGEN' ? 'POLYGON' : lockedType;
+                        partBadge.textContent = 'DOOR: ' + displayName;
+                        if (lockedType === 'CIRCLE') {
+                            partBadge.style.background = '#fef3c7';
+                            partBadge.style.color = '#92400e';
+                        } else if (lockedType === 'POLYGEN') {
+                            partBadge.style.background = '#e0e7ff';
+                            partBadge.style.color = '#3730a3';
+                        } else {
+                            partBadge.style.background = '#dcfce7';
+                            partBadge.style.color = '#166534';
+                        }
+                    } else {
+                        partBadge.textContent = 'DOOR: AUTO';
+                        partBadge.style.background = '#f1f5f9';
+                        partBadge.style.color = '#475569';
+                    }
+                }
+                
+                // Update indicator in config sidebar
+                const modelInd = document.getElementById('active-model-indicator');
+                const modelFile = document.getElementById('active-model-filename');
+                if (modelInd) {
+                    modelInd.textContent = lockedType ? (lockedType === 'POLYGEN' ? 'POLYGON' : lockedType) : 'AUTO';
+                    if (lockedType === 'CIRCLE') {
+                        modelInd.style.background = '#fef3c7';
+                        modelInd.style.color = '#92400e';
+                    } else if (lockedType === 'POLYGEN') {
+                        modelInd.style.background = '#e0e7ff';
+                        modelInd.style.color = '#3730a3';
+                    } else if (lockedType === 'RECTANGLE') {
+                        modelInd.style.background = '#dcfce7';
+                        modelInd.style.color = '#166534';
+                    } else {
+                        modelInd.style.background = '#dbeafe';
+                        modelInd.style.color = '#1e40af';
+                    }
+                }
+                if (modelFile) {
+                    const modelFiles = {
+                        'CIRCLE': 'best (2)_cIRCLE.pt',
+                        'POLYGEN': 'best (2)polygen.pt',
+                        'RECTANGLE': 'SSP_Fueldoor_rectangle_v1.pt'
+                    };
+                    modelFile.textContent = lockedType ? (modelFiles[lockedType] || lockedType) : 'Auto-detecting...';
+                }
 
                 if (data.roi && !roiMode) {
                     document.getElementById('roi-status-badge').textContent = 'ACTIVE';

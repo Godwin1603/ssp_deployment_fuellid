@@ -1,10 +1,13 @@
 ai:
   class_confidences:
     # --- Panel classes ---
-    back: 0.85
-    cricle_back: 0.75      # model class ID 3 (note: typo in model)
-    circle_front: 0.75     # model class ID 2
+    back: 0.80
+    circle_back: 0.75
+    cricle_back: 0.75      # model class ID typo in model
+    circle_front: 0.75
     front: 0.80
+    polygen_back: 0.80
+    polygen_front: 0.80
     # --- Hole / structural ---
     holes: 0.80
     hole_missing: 0.30
@@ -25,7 +28,10 @@ ai:
   default_yolo_confidence: 0.09
   min_defect_area: 50
   defect_merge_distance: 50
-  model_path: SSP_FUEL_LID_V7.pt
+  models:
+    circle: "best (2)_cIRCLE.pt"
+    polygen: "best (2)polygen.pt"
+    rectangle: "SSP_Fueldoor_rectangle_v1.pt"
   ocr_confidence_threshold: 0.1
   ocr_fallback_timeout: 3.5
   part_presence:

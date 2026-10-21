@@ -1,4 +1,4 @@
 from ultralytics import YOLO
 
-model = YOLO("SSP_FUEL_LID_V7.pt")
+model = YOLO("SSP_Fueldoor_rectangle_v1.pt")
 print(model.names)
