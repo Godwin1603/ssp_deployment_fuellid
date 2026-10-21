@@ -1,4 +1,3 @@
-
 ai:
   class_confidences:
     # --- Panel classes ---
@@ -7,24 +6,24 @@ ai:
     circle_front: 0.75     # model class ID 2
     front: 0.80
     # --- Hole / structural ---
-    holes: 0.40
-    hole_missing: 0.60
-    hole_spec_error: 0.90 
+    holes: 0.80
+    hole_missing: 0.30
+    hole_spec_error: 0.20
     # --- Defect classes ---
-    bulge: 0.50
-    damage: 0.1
-    dent: 0.70
+    bulge: 0.09
+    damage: 0.09
+    dent: 0.09
     flange_bend: 0.60
     flange_cut: 0.40
-    forming_damage: 0.60
+    forming_damage: 0.09
     leg_bend: 0.40
     line_mark: 0.40
     scrap_mark: 0.40
     # --- OCR classes ---
     serial: 0.10
     serial_area: 0.10
-  default_yolo_confidence: 0.10
-  min_defect_area: 200
+  default_yolo_confidence: 0.09
+  min_defect_area: 50
   defect_merge_distance: 50
   model_path: SSP_FUEL_LID_V7.pt
   ocr_confidence_threshold: 0.1
@@ -33,6 +32,7 @@ ai:
     blue_thresh: 0.75
     laplacian_variance_min: 150.0
     metal_min_ratio: 0.15
+  roi_side_tolerance_pct: 0.6
 camera:
   gige:
     exposure: 60000.0

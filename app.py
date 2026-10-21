@@ -200,7 +200,7 @@ current_cycle = {
     "vote_1": "- - - - - -",
     "vote_2": "- - - - - -",
     "vote_3": "- - - - - -",
-    "instruction": "WAITING FOR PART",
+    "instruction": "WAITING FOR DOOR",
     "instruction_color": "blue"
 }
 
@@ -447,9 +447,9 @@ def finalize_report_and_rename(c_data):
                 current_cycle["instruction_color"] = "blue"
                 current_cycle["status"] = "Reading Serial Number..."
         
-        # Wait for OCR to finish reading serial (up to 15 seconds)
+        # Wait for OCR to finish reading serial (up to configured timeout)
         ocr_wait_start = time.time()
-        while time.time() - ocr_wait_start < 6.0:
+        while time.time() - ocr_wait_start < OCR_FALLBACK_TIMEOUT:
             with lock:
                 if c_data["serial_number"] is not None:
                     logger.info(f"[Finalize] OCR ready: {c_data['serial_number']}")
@@ -480,7 +480,7 @@ def finalize_report_and_rename(c_data):
                 else:
                     c_data["serial_number"] = "serial_missing"
                     c_data["ocr_confidence"] = 0.0
-                    logger.info(f"[Finalize] No OCR result after 5s wait, using serial_missing")
+                    logger.info(f"[Finalize] No OCR result after {OCR_FALLBACK_TIMEOUT}s wait, using serial_missing")
 
         # Feature: Recheck if serial is missing
         is_missing = False
@@ -524,21 +524,21 @@ def finalize_report_and_rename(c_data):
 
         # Read defects and verify holes to determine PASS/FAIL early
         with lock:
-            defects = list(active_cycle_data["defects_detected"])
             if active_cycle_data["max_holes_detected"] < 2:
-                defects.append("holes_missing")
-            if serial == "serial_missing":
-                defects.append("serial_missing")
+                active_cycle_data["defects_detected"].add("holes_missing")
+            if active_cycle_data["serial_number"] == "serial_missing":
+                active_cycle_data["defects_detected"].add("serial_missing")
+            defects = list(active_cycle_data["defects_detected"])
             current_cycle["defects"] = defects
         status = "FAIL" if defects else "PASS"
 
         # Now that we have the final serial number and pass/fail status, instruct operator
         with lock:
             if status == "PASS":
-                current_cycle["instruction"] = "OK - REMOVE THE PLATE"
+                current_cycle["instruction"] = "OK - REMOVE THE DOOR"
                 current_cycle["instruction_color"] = "green"
             else:
-                current_cycle["instruction"] = "NG - REMOVE THE PLATE"
+                current_cycle["instruction"] = "NG - REMOVE THE DOOR"
                 current_cycle["instruction_color"] = "red"
             current_cycle["status"] = "Saving report..."
         
@@ -575,22 +575,24 @@ def finalize_report_and_rename(c_data):
         # Path of the report within the temp folder matching the folder_name
         temp_report_path = os.path.join(temp_dir, f"{folder_name}.pdf")
 
-        # Create report PDF
-        create_inspection_report(
-            serial_number=serial,
-            model_name="IP Cam",
-            status=status,
-            date_str=datetime.now().strftime("%Y-%m-%d"),
-            time_str=datetime.now().strftime("%H:%M:%S"),
-            traceability_id=f"TRC{folder_name}",
-            front_image_path=front,
-            back_image_path=back,
-            ocr_serial=serial,
-            confidence=conf,
-            defects=defects,
-            defect_image_path=defect_frame,  # Annotated front frame showing detected defects
-            output_path=temp_report_path
-        )
+        # Create report PDF in a separate process to avoid GIL lag
+        import subprocess, json, sys
+        report_kwargs = {
+            "serial_number": serial,
+            "model_name": "IP Cam",
+            "status": status,
+            "date_str": datetime.now().strftime("%Y-%m-%d"),
+            "time_str": datetime.now().strftime("%H:%M:%S"),
+            "traceability_id": f"TRC{folder_name}",
+            "front_image_path": front,
+            "back_image_path": back,
+            "ocr_serial": serial,
+            "confidence": conf,
+            "defects": defects,
+            "defect_image_path": defect_frame,
+            "output_path": temp_report_path
+        }
+        subprocess.run([sys.executable, "run_report.py", json.dumps(report_kwargs)])
 
         # Final destination path
         final_dir = os.path.join(day_dir, folder_name)
@@ -665,7 +667,7 @@ def reset_cycle_state():
         current_cycle["vote_1"] = "- - - - - -"
         current_cycle["vote_2"] = "- - - - - -"
         current_cycle["vote_3"] = "- - - - - -"
-        current_cycle["instruction"] = "WAITING FOR PART"
+        current_cycle["instruction"] = "WAITING FOR DOOR"
         current_cycle["instruction_color"] = "blue"
         
         active_cycle_data = {
@@ -1459,6 +1461,8 @@ def yolo_worker_loop():
             back_box = None
             front_class = None  # Will be 'front' or 'circle_front'
             back_class = None   # Will be 'back', 'circle_back', or 'cricle_back'
+            front_conf = -1.0
+            back_conf = -1.0
             
             # Track sub-feature detections for fallback (circular shapes that don't detect front/back)
             sub_feature_boxes = []  # Collect all non-front/back bounding boxes
@@ -1643,8 +1647,8 @@ def yolo_worker_loop():
                             continue # Skip this bounding box
                     else:
                         # Defect classes are valid on both FRONT and BACK sides
-                        if not (has_front_detected or has_back_detected):
-                            continue # Skip this defect bounding box
+                        # if not (has_front_detected or has_back_detected):
+                        #     continue # Skip this defect bounding box
                         
                         # Fast and accurate filter: remove tiny false positive defects based on area
                         box_area = (x2 - x1) * (y2 - y1)
@@ -1706,11 +1710,15 @@ def yolo_worker_loop():
                         if has_back_detected or (not has_front_detected and not has_back_detected):
                             frame_holes += 1
                     elif class_name in ["front", "circle_front"]:
-                        front_box = (x1, y1, x2, y2)
-                        front_class = class_name  # Track whether it's 'front' or 'circle_front'
+                        if conf > front_conf:
+                            front_box = (x1, y1, x2, y2)
+                            front_class = class_name  # Track whether it's 'front' or 'circle_front'
+                            front_conf = conf
                     elif class_name in ["back", "circle_back", "cricle_back"]:
-                        back_box = (x1, y1, x2, y2)
-                        back_class = class_name  # Track the actual detected back class
+                        if conf > back_conf:
+                            back_box = (x1, y1, x2, y2)
+                            back_class = class_name  # Track the actual detected back class
+                            back_conf = conf
                         
                     # Feature: Treat serial or holes as back panel if back panel box is missing
                     if class_name in ["serial", "serial_area", "holes"] and back_class is None:
@@ -1848,7 +1856,7 @@ def yolo_worker_loop():
                         if roi_warning:
                             active_cycle_data["front_frames_count"] = 0
                             active_cycle_data["front_first_seen_time"] = None
-                            current_cycle["status"] = "Part Out of Bounds!"
+                            current_cycle["status"] = "Door Out of Bounds!"
                             current_cycle["instruction"] = "PLACE PROPERLY INSIDE FRAME"
                             current_cycle["instruction_color"] = "red"
                         else:
@@ -1912,7 +1920,7 @@ def yolo_worker_loop():
                         if roi_warning:
                             active_cycle_data["back_frames_count"] = 0
                             active_cycle_data["back_first_seen_time"] = None
-                            current_cycle["status"] = "Part Out of Bounds!"
+                            current_cycle["status"] = "Door Out of Bounds!"
                             current_cycle["instruction"] = "PLACE PROPERLY INSIDE FRAME"
                             current_cycle["instruction_color"] = "red"
                         else:
@@ -1930,8 +1938,8 @@ def yolo_worker_loop():
                                 # Wrong part type placed — alert operator and block capture
                                 expected = "STANDARD BACK" if front_type == "standard" else "CIRCLE BACK"
                                 logger.warning(f"[Mismatch] Front type='{front_type}' but detected back_class='{back_class}'. Blocking capture.")
-                                current_cycle["status"] = "Part Type Mismatch!"
-                                current_cycle["instruction"] = "PLACE CORRECT PART"
+                                current_cycle["status"] = "Door Type Mismatch!"
+                                current_cycle["instruction"] = "PLACE CORRECT DOOR"
                                 current_cycle["instruction_color"] = "red"
                                 # Reset back-stability counters so capture does not proceed
                                 active_cycle_data["back_frames_count"] = 0
@@ -1965,7 +1973,7 @@ def yolo_worker_loop():
                             
                                 ocr_done = active_cycle_data.get("serial_number") is not None
                                 ocr_start = active_cycle_data.get("ocr_start_time")
-                                ocr_timeout = (ocr_start is not None) and (time.time() - ocr_start > 5.0)
+                                ocr_timeout = (ocr_start is not None) and (time.time() - ocr_start > OCR_FALLBACK_TIMEOUT)
                             
                                 if time_stable >= 0.0 or ocr_done:
                                     # Delay the transition to finalization until the OCR thread has actually successfully completed or timed out
@@ -2002,7 +2010,7 @@ def yolo_worker_loop():
                         if active_cycle_data["remove_frames_count"] == 1:
                             current_cycle["serial"] = "------"
                             current_cycle["confidence"] = "- -"
-                            current_cycle["status"] = "Part removed. Saving report..."
+                            current_cycle["status"] = "Door removed. Saving report..."
                             current_cycle["instruction"] = "REMOVE COMPLETE - SAVING..."
                             current_cycle["instruction_color"] = "orange"
                         if active_cycle_data["remove_frames_count"] >= 3:
@@ -2017,19 +2025,19 @@ def yolo_worker_loop():
                         
                 # Update UI data outside state transitions
                 if state in ["WAITING_FRONT", "WAITING_BACK", "WAITING_REMOVE"]:
-                    current_cycle["holes_count"] = min(2, max(current_cycle["holes_count"], frame_holes))
+                    current_cycle["holes_count"] = frame_holes
                     # --- Dynamic Defect Tracker & Freezing Engine ---
                     tracker = active_cycle_data.get("defect_tracker", {})
                     detected_classes = set(d for d in frame_defects if d != "out_of_bounds")
                     
                     for d in detected_classes:
                         if d not in tracker:
-                            tracker[d] = {"hit_count": 1, "miss_count": 0, "status": "PENDING"}
+                            tracker[d] = {"hit_count": 0, "miss_count": 0, "status": "PENDING"}
                         else:
                             tracker[d]["hit_count"] += 1
                             tracker[d]["miss_count"] = 0
                         
-                        if tracker[d]["hit_count"] >= 3:
+                        if tracker[d]["hit_count"] >= 1:
                             tracker[d]["status"] = "CONFIRMED"
                             active_cycle_data["defects_detected"].add(d)
 
@@ -2041,7 +2049,9 @@ def yolo_worker_loop():
                                 to_remove.append(d)
                             elif info["status"] == "CONFIRMED" and info["miss_count"] >= 5:
                                 to_remove.append(d)
-                                active_cycle_data["defects_detected"].discard(d)
+                                # active_cycle_data["defects_detected"].discard(d) # NEVER DISCARD
+                                if d == "hole_missing" or d == "hole_spec_error":
+                                    active_cycle_data["defects_detected"].discard(d)
                     
                     for d in to_remove:
                         del tracker[d]
