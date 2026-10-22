@@ -29,7 +29,7 @@ ai:
   min_defect_area: 50
   defect_merge_distance: 50
   models:
-    circle: "best (2)_cIRCLE.pt"
+    circle: "best_circle.pt"
     polygen: "best (2)polygen.pt"
     rectangle: "SSP_Fueldoor_rectangle_v1.pt"
   ocr_confidence_threshold: 0.1

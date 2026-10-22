@@ -160,7 +160,7 @@ app = Flask(__name__, template_folder='.', static_folder='.', static_url_path=''
 # -------------------------------
 PART_MODELS = {
     "CIRCLE": {
-        "path": APP_CONFIG.get("ai", {}).get("models", {}).get("circle", "best (2)_cIRCLE.pt"),
+        "path": APP_CONFIG.get("ai", {}).get("models", {}).get("circle", "best_circle.pt"),
         "model": None,
         "front_classes": ["circle_front"],
         "back_classes": ["circle_back", "cricle_back"],

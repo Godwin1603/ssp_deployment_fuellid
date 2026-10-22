@@ -1,1 +1,0 @@
-[(1882, "@app.route('/video_feed')"), (1883, 'def video_feed():')]
