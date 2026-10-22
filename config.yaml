@@ -27,6 +27,7 @@ ai:
     serial_area: 0.10
   default_yolo_confidence: 0.09
   min_defect_area: 50
+  max_defect_plate_ratio: 0.50
   defect_merge_distance: 50
   models:
     circle: "best_circle.pt"

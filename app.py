@@ -289,14 +289,15 @@ def init_models():
         )
     print("All Models Initialized.")
 
-def detect_fueldoor_shape(img):
+def get_fueldoor_geometry(img):
     """
-    Analyzes physical shape of the metal fuel door flap on blue tray.
-    Uses minAreaRect to be 100% rotation invariant.
-    Returns: 'CIRCLE', 'POLYGEN', 'RECTANGLE', or 'UNKNOWN'
+    Analyzes physical shape and bounding box of the metal fuel door flap on blue tray.
+    Returns: (shape, bbox, metal_contour_area)
+    where shape in ['CIRCLE', 'POLYGEN', 'RECTANGLE', 'UNKNOWN']
+    bbox is (x, y, w, h) in original image coordinates, or None if not found.
     """
     if img is None:
-        return 'UNKNOWN'
+        return 'UNKNOWN', None, 0
     h, w = img.shape[:2]
     total_area = w * h
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -307,10 +308,10 @@ def detect_fueldoor_shape(img):
     part = cv2.morphologyEx(part, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     cnts, _ = cv2.findContours(part, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
-        return 'UNKNOWN'
+        return 'UNKNOWN', None, 0
     c = max(cnts, key=cv2.contourArea)
     if cv2.contourArea(c) < total_area * 0.05:
-        return 'UNKNOWN'
+        return 'UNKNOWN', None, 0
         
     # Isolate bright metal flap from dark steel hinge
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -318,12 +319,14 @@ def detect_fueldoor_shape(img):
     metal = cv2.morphologyEx(metal, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
     mcnts, _ = cv2.findContours(metal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not mcnts:
-        return 'UNKNOWN'
+        return 'UNKNOWN', None, 0
     mc = max(mcnts, key=cv2.contourArea)
     m_area = cv2.contourArea(mc)
     if m_area < total_area * 0.03:
-        return 'UNKNOWN'
+        return 'UNKNOWN', None, 0
         
+    gx, gy, gw, gh = cv2.boundingRect(mc)
+    
     rect = cv2.minAreaRect(mc)
     (rw, rh) = rect[1]
     dim_max = max(rw, rh)
@@ -335,13 +338,24 @@ def detect_fueldoor_shape(img):
     
     # 1. Circle: Aspect close to 1.0 (0.90 to 1.07) & high circular enclosure (> 0.88)
     if 0.90 <= aspect <= 1.07 and circ_cov >= 0.88:
-        return 'CIRCLE'
+        shape = 'CIRCLE'
     # 2. Polygon: Flattened shape with aspect < 1.25
     elif aspect < 1.25:
-        return 'POLYGEN'
+        shape = 'POLYGEN'
     # 3. Rectangle: Elongated shape with aspect >= 1.25
     else:
-        return 'RECTANGLE'
+        shape = 'RECTANGLE'
+        
+    return shape, (gx, gy, gw, gh), m_area
+
+def detect_fueldoor_shape(img):
+    """
+    Analyzes physical shape of the metal fuel door flap on blue tray.
+    Uses minAreaRect to be 100% rotation invariant.
+    Returns: 'CIRCLE', 'POLYGEN', 'RECTANGLE', or 'UNKNOWN'
+    """
+    shape, _, _ = get_fueldoor_geometry(img)
+    return shape
 
 # -------------------------------
 # Asynchronous Background Processing
@@ -1704,6 +1718,11 @@ def yolo_worker_loop():
             cv2.putText(annotated_frame, roi_label, (rx + 5, ry - 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, label_color, font_thick)
             
             if results:
+                FULL_PLATE_CLASSES = [
+                    "front", "circle_front", "polygen_front",
+                    "back", "circle_back", "cricle_back", "polygen_back"
+                ]
+                panel_box_area = None
                 
                 for box in boxes:
                     cls_id = int(box.cls[0].cpu().item())
@@ -1715,9 +1734,27 @@ def yolo_worker_loop():
                         
                     if class_name in ["front", "circle_front", "polygen_front"]:
                         has_front_detected = True
-                    elif class_name in ["back", "circle_back", "cricle_back", "polygen_back", "serial", "serial_area", "holes"]:
+                        xyxy_r = box.xyxy[0].cpu().numpy()
+                        bw = (xyxy_r[2] - xyxy_r[0]) / scale
+                        bh = (xyxy_r[3] - xyxy_r[1]) / scale
+                        panel_box_area = max(panel_box_area or 0, bw * bh)
+                    elif class_name in ["back", "circle_back", "cricle_back", "polygen_back"]:
+                        has_back_detected = True
+                        xyxy_r = box.xyxy[0].cpu().numpy()
+                        bw = (xyxy_r[2] - xyxy_r[0]) / scale
+                        bh = (xyxy_r[3] - xyxy_r[1]) / scale
+                        panel_box_area = max(panel_box_area or 0, bw * bh)
+                    elif class_name in ["serial", "serial_area", "holes"]:
                         has_back_detected = True
                 
+                # Determine plate area from YOLO panel box or physical geometry
+                geom_shape, geom_bbox, geom_area = get_fueldoor_geometry(frame_to_process)
+                geom_box_area = (geom_bbox[2] * geom_bbox[3]) if geom_bbox else None
+                reference_plate_area = panel_box_area or geom_box_area
+
+                max_defect_plate_ratio = APP_CONFIG.get("ai", {}).get("max_defect_plate_ratio", 0.50)
+                frame_area = w_orig * h_orig
+
                 for box_idx, box in enumerate(boxes):
                     xyxy_resized = box.xyxy[0].cpu().numpy().astype(int)
                     cls_id = int(box.cls[0].cpu().item())
@@ -1729,8 +1766,6 @@ def yolo_worker_loop():
                     if conf < CLASS_CONF_THRESHOLDS.get(class_name, YOLO_CONF_THRESHOLD):
                         continue
                         
-                    # Removed the condition that ignores defects if front is not detected
-                    # so that defects are always shown if found.                    
                     mask_polygon = None
                     if getattr(results[0], 'masks', None) is not None and len(results[0].masks.xy) > box_idx:
                         segment = results[0].masks.xy[box_idx]
@@ -1748,9 +1783,28 @@ def yolo_worker_loop():
                     x1, y1 = max(0, x1), max(0, y1)
                     x2, y2 = min(w_orig, x2), min(h_orig, y2)
                     
-                    # --- NEW LOGIC: Empty Tray Filter ---
+                    box_w = x2 - x1
+                    box_h = y2 - y1
+                    box_area = box_w * box_h
+
+                    # --- Full-Plate Annotation Guard ---
+                    # ONLY legitimate panel classes (Front / Back) are allowed to cover the full part.
+                    # If any defect or other class is falsely predicted as covering the full plate,
+                    # HIDE it and DO NOT count it as a defect.
+                    if class_name not in FULL_PLATE_CLASSES:
+                        is_full_plate_hallucination = False
+                        if reference_plate_area and box_area > (reference_plate_area * max_defect_plate_ratio):
+                            is_full_plate_hallucination = True
+                        elif box_area > (frame_area * 0.25) or (box_w > w_orig * 0.55 and box_h > h_orig * 0.55):
+                            is_full_plate_hallucination = True
+                            
+                        if is_full_plate_hallucination:
+                            logger.info(f"Filtered out false full-plate annotation for '{class_name}' (area={box_area}, ratio={box_area/(reference_plate_area or frame_area):.2f})")
+                            continue  # Skip: do NOT draw, do NOT count in defects
+                    # -----------------------------------
+                    
+                    # --- Empty Tray Filter ---
                     # Apply empty tray filtering to all classes
-                    # Load config values
                     presence_cfg = APP_CONFIG.get("ai", {}).get("part_presence", {})
                     blue_t = presence_cfg.get("blue_thresh", 0.75)
                     metal_t = presence_cfg.get("metal_min_ratio", 0.15)
@@ -1762,12 +1816,7 @@ def yolo_worker_loop():
                             logger.info(f"Filtered out empty tray misclassified as '{class_name}' (conf: {conf:.2f})")
                             continue # Skip this bounding box
                     else:
-                        # Defect classes are valid on both FRONT and BACK sides
-                        # if not (has_front_detected or has_back_detected):
-                        #     continue # Skip this defect bounding box
-                        
                         # Fast and accurate filter: remove tiny false positive defects based on area
-                        box_area = (x2 - x1) * (y2 - y1)
                         min_defect_area = APP_CONFIG.get("ai", {}).get("min_defect_area", 200)
                         if box_area < min_defect_area:
                             logger.info(f"Filtered out {class_name} due to small area ({box_area} < {min_defect_area})")
