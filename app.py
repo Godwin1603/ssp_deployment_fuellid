@@ -162,15 +162,15 @@ PART_MODELS = {
     "CIRCLE": {
         "path": APP_CONFIG.get("ai", {}).get("models", {}).get("circle", "best_circle.pt"),
         "model": None,
-        "front_classes": ["circle_front"],
+        "front_classes": ["circle_front", "cricle_front"],
         "back_classes": ["circle_back", "cricle_back"],
         "display_name": "CIRCLE"
     },
     "POLYGEN": {
         "path": APP_CONFIG.get("ai", {}).get("models", {}).get("polygen", "best (2)polygen.pt"),
         "model": None,
-        "front_classes": ["polygen_front"],
-        "back_classes": ["polygen_back"],
+        "front_classes": ["polygen_front", "polygon_front"],
+        "back_classes": ["polygen_back", "polygon_back"],
         "display_name": "POLYGON"
     },
     "RECTANGLE": {
@@ -336,15 +336,15 @@ def get_fueldoor_geometry(img):
     (fcx, fcy), radius = cv2.minEnclosingCircle(mc)
     circ_cov = m_area / (np.pi * radius * radius + 1e-5)
     
-    # 1. Circle: Aspect close to 1.0 (0.90 to 1.07) & high circular enclosure (> 0.88)
-    if 0.90 <= aspect <= 1.07 and circ_cov >= 0.88:
+    # 1. Circle: Round shape (aspect <= 1.22 and circular enclosure >= 0.60)
+    if aspect <= 1.22 and circ_cov >= 0.60:
         shape = 'CIRCLE'
-    # 2. Polygon: Flattened shape with aspect < 1.25
-    elif aspect < 1.25:
-        shape = 'POLYGEN'
-    # 3. Rectangle: Elongated shape with aspect >= 1.25
-    else:
+    # 2. Rectangle: Elongated shape with aspect >= 1.30
+    elif aspect >= 1.30:
         shape = 'RECTANGLE'
+    # 3. Polygon: Intermediate shape
+    else:
+        shape = 'POLYGEN'
         
     return shape, (gx, gy, gw, gh), m_area
 
@@ -1409,9 +1409,9 @@ def video_processing_loop():
                 color = (0, 255, 0)
                 text_color = (0, 0, 0) # default black text
                 
-                if class_name in ["front", "circle_front"]:
+                if class_name in ["front", "circle_front", "cricle_front", "polygen_front", "polygon_front"]:
                     color = (0, 165, 255)
-                elif class_name in ["back", "circle_back", "cricle_back"]:
+                elif class_name in ["back", "circle_back", "cricle_back", "polygen_back", "polygon_back"]:
                     color = (255, 0, 255)
                 elif class_name in ["serial", "serial_area"]:
                     color = (255, 255, 0)
@@ -1428,8 +1428,8 @@ def video_processing_loop():
                 else:
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
 
-                # Draw label without confidence percentage
-                label = class_name.replace("_", " ").title()
+                # Draw label without confidence percentage (normalize typos like cricle -> circle)
+                label = class_name.replace("cricle", "circle").replace("polygen", "polygon").replace("_", " ").title()
                 (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
                 text_x = x1
                 text_y = max(y1 - 5, text_h + 5)
@@ -1550,23 +1550,19 @@ def yolo_worker_loop():
             with lock:
                 locked_key = active_cycle_data.get("locked_model_key")
                 
-            if locked_key and locked_key in PART_MODELS and PART_MODELS[locked_key]["model"] is not None:
+            if locked_key and locked_key in PART_MODELS and PART_MODELS[locked_key]["model"] is not None and state != "WAITING_FRONT":
                 active_model_key = locked_key
             else:
-                # In WAITING_FRONT or waiting for part: auto-detect part shape!
+                # In WAITING_FRONT or when searching: dynamically adjust to whatever part they are showing!
                 detected_shape = detect_fueldoor_shape(frame_to_process)
                 if detected_shape in PART_MODELS and PART_MODELS[detected_shape]["model"] is not None:
                     active_model_key = detected_shape
                     with lock:
-                        shape_votes = active_cycle_data.setdefault("shape_votes", {})
-                        shape_votes[detected_shape] = shape_votes.get(detected_shape, 0) + 1
-                        if shape_votes[detected_shape] >= 2 and active_cycle_data.get("locked_model_key") is None:
-                            active_cycle_data["locked_model_key"] = detected_shape
-                            current_cycle["locked_part_type"] = detected_shape
-                            current_cycle["part_type"] = detected_shape
-                            logger.info(f"[Auto-Detect] Locked model to {detected_shape} based on geometry")
+                        current_cycle["part_type"] = detected_shape
+                elif locked_key and locked_key in PART_MODELS:
+                    active_model_key = locked_key
                 else:
-                    active_model_key = "POLYGEN"
+                    active_model_key = "CIRCLE" if detected_shape == "CIRCLE" else "POLYGEN"
 
             active_yolo = PART_MODELS[active_model_key]["model"] or YOLO_MODEL
 
@@ -1623,7 +1619,10 @@ def yolo_worker_loop():
                 # Rule: if any panel class box TOUCHES or goes OUTSIDE the ROI
                 # Only activate ROI trigger if Waiting for Fuel Lid (step1_status) is OK, and we aren't in the middle of removing it
                 if current_cycle.get("step1_status") == "OK" and state != "WAITING_REMOVE":
-                    PANEL_CLASSES = ["front", "circle_front", "polygen_front", "back", "circle_back", "cricle_back", "polygen_back"]
+                    PANEL_CLASSES = [
+                        "front", "circle_front", "cricle_front", "polygen_front", "polygon_front",
+                        "back", "circle_back", "cricle_back", "polygen_back", "polygon_back"
+                    ]
                     roi_conf_threshold = APP_CONFIG.get("ai", {}).get("roi_confidence_threshold", 0.55)
                     for box in boxes:
                         cls_id = int(box.cls[0].cpu().item())
@@ -1719,8 +1718,8 @@ def yolo_worker_loop():
             
             if results:
                 FULL_PLATE_CLASSES = [
-                    "front", "circle_front", "polygen_front",
-                    "back", "circle_back", "cricle_back", "polygen_back"
+                    "front", "circle_front", "cricle_front", "polygen_front", "polygon_front",
+                    "back", "circle_back", "cricle_back", "polygen_back", "polygon_back"
                 ]
                 panel_box_area = None
                 
@@ -1732,13 +1731,13 @@ def yolo_worker_loop():
                     if conf < CLASS_CONF_THRESHOLDS.get(class_name, YOLO_CONF_THRESHOLD):
                         continue
                         
-                    if class_name in ["front", "circle_front", "polygen_front"]:
+                    if class_name in ["front", "circle_front", "cricle_front", "polygen_front", "polygon_front"]:
                         has_front_detected = True
                         xyxy_r = box.xyxy[0].cpu().numpy()
                         bw = (xyxy_r[2] - xyxy_r[0]) / scale
                         bh = (xyxy_r[3] - xyxy_r[1]) / scale
                         panel_box_area = max(panel_box_area or 0, bw * bh)
-                    elif class_name in ["back", "circle_back", "cricle_back", "polygen_back"]:
+                    elif class_name in ["back", "circle_back", "cricle_back", "polygen_back", "polygon_back"]:
                         has_back_detected = True
                         xyxy_r = box.xyxy[0].cpu().numpy()
                         bw = (xyxy_r[2] - xyxy_r[0]) / scale
@@ -1833,8 +1832,8 @@ def yolo_worker_loop():
                     # Draw annotations for saved images
                     color = (0, 255, 0)
                     text_color = (0, 0, 0) # default black text
-                    if class_name in ["front", "circle_front", "polygen_front"]: color = (0, 165, 255)
-                    elif class_name in ["back", "circle_back", "cricle_back", "polygen_back"]: color = (255, 0, 255)
+                    if class_name in ["front", "circle_front", "cricle_front", "polygen_front", "polygon_front"]: color = (0, 165, 255)
+                    elif class_name in ["back", "circle_back", "cricle_back", "polygen_back", "polygon_back"]: color = (255, 0, 255)
                     elif class_name in ["serial", "serial_area"]: color = (255, 255, 0)
                     elif class_name in ["dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend", "line_mark"]: 
                         color = (0, 0, 255) # Red box
@@ -1852,7 +1851,7 @@ def yolo_worker_loop():
                     else:
                         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 3)
                         
-                    label = class_name.replace("_", " ").title()
+                    label = class_name.replace("cricle", "circle").replace("polygen", "polygon").replace("_", " ").title()
                     (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
                     text_x = x1
                     text_y = max(y1 - 10, text_h + 10)
@@ -1874,12 +1873,12 @@ def yolo_worker_loop():
                         # Count holes when back is detected OR in fallback mode (no panel detected)
                         if has_back_detected or (not has_front_detected and not has_back_detected):
                             frame_holes += 1
-                    elif class_name in ["front", "circle_front", "polygen_front"]:
+                    elif class_name in ["front", "circle_front", "cricle_front", "polygen_front", "polygon_front"]:
                         if conf > front_conf:
                             front_box = (x1, y1, x2, y2)
-                            front_class = class_name  # Track whether it's 'front', 'circle_front', or 'polygen_front'
+                            front_class = class_name  # Track whether it's 'front', 'circle_front', etc.
                             front_conf = conf
-                    elif class_name in ["back", "circle_back", "cricle_back", "polygen_back"]:
+                    elif class_name in ["back", "circle_back", "cricle_back", "polygen_back", "polygon_back"]:
                         if conf > back_conf:
                             back_box = (x1, y1, x2, y2)
                             back_class = class_name  # Track the actual detected back class
@@ -1887,7 +1886,13 @@ def yolo_worker_loop():
                         
                     # Feature: Treat serial or holes as back panel if back panel box is missing
                     if class_name in ["serial", "serial_area", "holes"] and back_class is None:
-                        back_class = "back"
+                        curr_ft = active_cycle_data.get("front_type")
+                        if curr_ft == "circle":
+                            back_class = "circle_back"
+                        elif curr_ft == "polygen":
+                            back_class = "polygen_back"
+                        else:
+                            back_class = "back"
                         # Do not set back_box to avoid false mismatch triggers on circle vs standard,
                         # but we still mark back_class to indicate the back was conceptually captured.
                         
@@ -1915,7 +1920,7 @@ def yolo_worker_loop():
                 ocr_target_det = None
                 
                 # Only trigger OCR when back panel (or circle_back, polygen_back) is confirmed in the frame
-                back_in_frame = any(d["class_name"] in ["back", "circle_back", "cricle_back", "polygen_back", "serial", "serial_area", "holes"] for d in new_detections)
+                back_in_frame = any(d["class_name"] in ["back", "circle_back", "cricle_back", "polygen_back", "polygon_back", "serial", "serial_area", "holes"] for d in new_detections)
 
                 # Check for classes in priority order - only proceed if back is visible
                 if back_in_frame:
@@ -1995,11 +2000,11 @@ def yolo_worker_loop():
                                 args=(crop, active_cycle_data["temp_folder"], next_crop_num, active_cycle_data),
                                 daemon=True
                             ).start()
-                        elif class_name in ["circle_back", "cricle_back", "back", "polygen_back"]:
+                        elif class_name in ["circle_back", "cricle_back", "back", "polygen_back", "polygon_back"]:
                             # If we couldn't start OCR (thread busy), it's not a complete failure yet, just skipping this frame
                             pass
                     else:
-                        if class_name in ["circle_back", "cricle_back", "back", "polygen_back"]:
+                        if class_name in ["circle_back", "cricle_back", "back", "polygen_back", "polygon_back"]:
                             print(f"[OCR ERROR] Back-side detection found but OCR crop was not generated")
                 else:
                     with lock:
@@ -2061,16 +2066,16 @@ def yolo_worker_loop():
                             
                             active_cycle_data["front_path"] = front_file
                             # Record which front panel type was seen and lock model
-                            if front_class == "circle_front":
+                            if front_class in ["circle_front", "cricle_front"]:
                                 active_cycle_data["front_type"] = "circle"
                                 active_cycle_data["locked_model_key"] = "CIRCLE"
                                 current_cycle["locked_part_type"] = "CIRCLE"
                                 current_cycle["part_type"] = "CIRCLE"
-                            elif front_class == "polygen_front":
+                            elif front_class in ["polygen_front", "polygon_front"]:
                                 active_cycle_data["front_type"] = "polygen"
                                 active_cycle_data["locked_model_key"] = "POLYGEN"
-                                current_cycle["locked_part_type"] = "POLYGEN"
-                                current_cycle["part_type"] = "POLYGEN"
+                                current_cycle["locked_part_type"] = "POLYGON"
+                                current_cycle["part_type"] = "POLYGON"
                             else:
                                 active_cycle_data["front_type"] = "standard"
                                 active_cycle_data["locked_model_key"] = "RECTANGLE"
@@ -2116,89 +2121,72 @@ def yolo_worker_loop():
                             current_cycle["instruction"] = "PLACE PROPERLY INSIDE FRAME"
                             current_cycle["instruction_color"] = "red"
                         else:
-                            # --- Panel Type Mismatch Check ---
-                            front_model = active_cycle_data.get("locked_model_key")
-                            front_type = active_cycle_data.get("front_type")
-                            is_mismatched = False
-                            
-                            # 1. Geometric Shape check on back panel
-                            back_shape = detect_fueldoor_shape(frame_to_process)
-                            if back_shape != 'UNKNOWN' and front_model:
-                                if front_model == "CIRCLE" and back_shape in ["RECTANGLE", "POLYGEN"]:
-                                    is_mismatched = True
-                                elif front_model == "RECTANGLE" and back_shape in ["CIRCLE"]:
-                                    is_mismatched = True
-                            
-                            # 2. Class-based check if model detects foreign classes
-                            if back_box is not None and front_type is not None:
-                                if front_type == "standard" and back_class in ["circle_back", "cricle_back", "polygen_back"]:
-                                    is_mismatched = True
-                                elif front_type == "circle" and back_class in ["back", "polygen_back"]:
-                                    is_mismatched = True
-                                elif front_type == "polygen" and back_class in ["back", "circle_back", "cricle_back"]:
-                                    is_mismatched = True
+                            # Dynamically adjust to what part they are showing (no strict blocking)
+                            if back_class in ["circle_back", "cricle_back"]:
+                                active_cycle_data["locked_model_key"] = "CIRCLE"
+                                active_cycle_data["front_type"] = "circle"
+                                current_cycle["locked_part_type"] = "CIRCLE"
+                                current_cycle["part_type"] = "CIRCLE"
+                            elif back_class in ["polygen_back", "polygon_back"]:
+                                active_cycle_data["locked_model_key"] = "POLYGEN"
+                                active_cycle_data["front_type"] = "polygen"
+                                current_cycle["locked_part_type"] = "POLYGON"
+                                current_cycle["part_type"] = "POLYGON"
+                            elif back_class == "back" and active_cycle_data.get("front_type") == "standard":
+                                active_cycle_data["locked_model_key"] = "RECTANGLE"
+                                current_cycle["locked_part_type"] = "RECTANGLE"
+                                current_cycle["part_type"] = "RECTANGLE"
 
-                            if is_mismatched:
-                                # Wrong part type placed — alert operator and block capture
-                                expected = f"{front_model or 'MATCHING'} BACK"
-                                logger.warning(f"[Mismatch] Front was '{front_model}' but detected mismatched back (shape='{back_shape}', class='{back_class}'). Blocking capture.")
-                                current_cycle["status"] = "Door Type Mismatch!"
-                                current_cycle["instruction"] = f"WRONG DOOR! PLACE {expected}"
-                                current_cycle["instruction_color"] = "red"
-                                # Reset back-stability counters so capture does not proceed
+                            # Proceed normally with stabilization and capture
+                            # Determine a center for movement tracking
+                            if back_box:
+                                cx = (back_box[0] + back_box[2]) / 2
+                                cy = (back_box[1] + back_box[3]) / 2
+                            elif len(sub_feature_boxes) > 0:
+                                cx = sum([b[0] + b[2] for b in sub_feature_boxes]) / (2 * len(sub_feature_boxes))
+                                cy = sum([b[1] + b[3] for b in sub_feature_boxes]) / (2 * len(sub_feature_boxes))
+                            else:
+                                cx, cy = w_orig / 2, h_orig / 2
+                            
+                            prev_cx, prev_cy = active_cycle_data.get("back_box_center") or (cx, cy)
+                            dist = ((cx - prev_cx)**2 + (cy - prev_cy)**2)**0.5
+                        
+                            if dist > 50:
                                 active_cycle_data["back_frames_count"] = 0
                                 active_cycle_data["back_first_seen_time"] = None
-                            else:
-                                # Correct panel (or only sub-features visible) — proceed normally
-                                # Determine a center for movement tracking
-                                if back_box:
-                                    cx = (back_box[0] + back_box[2]) / 2
-                                    cy = (back_box[1] + back_box[3]) / 2
-                                elif len(sub_feature_boxes) > 0:
-                                    cx = sum([b[0] + b[2] for b in sub_feature_boxes]) / (2 * len(sub_feature_boxes))
-                                    cy = sum([b[1] + b[3] for b in sub_feature_boxes]) / (2 * len(sub_feature_boxes))
+                            
+                            active_cycle_data["back_box_center"] = (cx, cy)
+                            active_cycle_data["back_frames_count"] += 1
+                        
+                            if active_cycle_data.get("back_first_seen_time") is None:
+                                active_cycle_data["back_first_seen_time"] = time.time()
+                            
+                            time_stable = time.time() - active_cycle_data["back_first_seen_time"]
+                        
+                            ocr_done = active_cycle_data.get("serial_number") is not None
+                            ocr_start = active_cycle_data.get("ocr_start_time")
+                            ocr_timeout = (ocr_start is not None) and (time.time() - ocr_start > OCR_FALLBACK_TIMEOUT)
+                        
+                            if time_stable >= 0.0 or ocr_done:
+                                # Delay the transition to finalization until the OCR thread has actually successfully completed or timed out
+                                if ocr_done or ocr_timeout:
+                                    # Save full annotated image without cropping
+                                    full_raw = frame_to_process.copy()
+                                    back_file = os.path.join(active_cycle_data["temp_folder"], "back.jpg")
+                                    cv2.imwrite(back_file, full_raw, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                                    active_cycle_data["back_path"] = back_file
+                                
+                                    current_cycle["step3_status"] = "OK"
+                                    for d in frame_defects:
+                                        if d != "out_of_bounds":
+                                            active_cycle_data["defects_detected"].add(d)
+                                
+                                    # Go straight to finalization
+                                    active_cycle_data["state"] = "WAITING_REMOVE"
+                                    check_and_finalize_cycle(active_cycle_data)
                                 else:
-                                    cx, cy = w_orig / 2, h_orig / 2
-                                
-                                prev_cx, prev_cy = active_cycle_data.get("back_box_center") or (cx, cy)
-                                dist = ((cx - prev_cx)**2 + (cy - prev_cy)**2)**0.5
-                            
-                                if dist > 50:
-                                    active_cycle_data["back_frames_count"] = 0
-                                    active_cycle_data["back_first_seen_time"] = None
-                                
-                                active_cycle_data["back_box_center"] = (cx, cy)
-                                active_cycle_data["back_frames_count"] += 1
-                            
-                                if active_cycle_data.get("back_first_seen_time") is None:
-                                    active_cycle_data["back_first_seen_time"] = time.time()
-                                
-                                time_stable = time.time() - active_cycle_data["back_first_seen_time"]
-                            
-                                ocr_done = active_cycle_data.get("serial_number") is not None
-                                ocr_start = active_cycle_data.get("ocr_start_time")
-                                ocr_timeout = (ocr_start is not None) and (time.time() - ocr_start > OCR_FALLBACK_TIMEOUT)
-                            
-                                if time_stable >= 0.0 or ocr_done:
-                                    # Delay the transition to finalization until the OCR thread has actually successfully completed or timed out
-                                    if ocr_done or ocr_timeout:
-                                        # Save full annotated image without cropping
-                                        full_raw = frame_to_process.copy()
-                                        back_file = os.path.join(active_cycle_data["temp_folder"], "back.jpg")
-                                        cv2.imwrite(back_file, full_raw, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                                        active_cycle_data["back_path"] = back_file
-                                    
-                                        current_cycle["step3_status"] = "OK"
-                                        for d in frame_defects:
-                                            if d != "out_of_bounds":
-                                                active_cycle_data["defects_detected"].add(d)
-                                    
-                                        # Go straight to finalization
-                                        active_cycle_data["state"] = "WAITING_REMOVE"
-                                        check_and_finalize_cycle(active_cycle_data)
-                                    else:
-                                        current_cycle["instruction"] = "DETECTING SERIAL NUMBER..."
-                                        active_cycle_data["back_frames_count"] = 1 # Keep it below threshold until serial is seen
+                                    current_cycle["instruction"] = "DETECTING SERIAL NUMBER..."
+                                    active_cycle_data["back_frames_count"] = 1 # Keep it below threshold until serial is seen
                     else:
                         active_cycle_data["back_frames_count"] = 0
                         active_cycle_data["back_first_seen_time"] = None

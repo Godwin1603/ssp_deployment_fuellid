@@ -5,13 +5,16 @@ ai:
     circle_back: 0.75
     cricle_back: 0.75      # model class ID typo in model
     circle_front: 0.75
+    cricle_front: 0.75     # typo alias
     front: 0.80
     polygen_back: 0.80
     polygen_front: 0.80
+    polygon_back: 0.80
+    polygon_front: 0.80
     # --- Hole / structural ---
     holes: 0.80
     hole_missing: 0.30
-    hole_spec_error: 0.20
+    hole_spec_error: 0.90
     # --- Defect classes ---
     bulge: 0.09
     damage: 0.09
