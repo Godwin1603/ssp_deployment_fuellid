@@ -1867,7 +1867,10 @@ def yolo_worker_loop():
                             has_holes_detected = True
                     
                     if class_name in ["dent", "bulge", "line_mark", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
-                        frame_defects.append(class_name)
+                        if class_name in ["hole_missing", "hole_spec_error"] and not has_back_detected:
+                            pass
+                        else:
+                            frame_defects.append(class_name)
                         
                     if class_name == "holes":
                         # Count holes when back is detected OR in fallback mode (no panel detected)
@@ -2028,7 +2031,7 @@ def yolo_worker_loop():
                             active_cycle_data["front_first_seen_time"] = None
                             current_cycle["status"] = "Door Out of Bounds!"
                             current_cycle["instruction"] = "PLACE PROPERLY INSIDE FRAME"
-                            current_cycle["instruction_color"] = "red"
+                            current_cycle["instruction_color"] = "orange"
                         else:
                             if active_cycle_data["temp_folder"] is None:
                                 today_str = datetime.now().strftime("%Y-%m-%d")
@@ -2119,7 +2122,7 @@ def yolo_worker_loop():
                             active_cycle_data["back_first_seen_time"] = None
                             current_cycle["status"] = "Door Out of Bounds!"
                             current_cycle["instruction"] = "PLACE PROPERLY INSIDE FRAME"
-                            current_cycle["instruction_color"] = "red"
+                            current_cycle["instruction_color"] = "orange"
                         else:
                             # Dynamically adjust to what part they are showing (no strict blocking)
                             if back_class in ["circle_back", "cricle_back"]:
@@ -2194,7 +2197,7 @@ def yolo_worker_loop():
                             # Operator placed a front panel instead of flipping to back
                             current_cycle["status"] = "Front Panel Detected!"
                             current_cycle["instruction"] = "PLEASE FLIP DOOR TO BACK SIDE"
-                            current_cycle["instruction_color"] = "red"
+                            current_cycle["instruction_color"] = "orange"
                             active_cycle_data["empty_tray_back_count"] = 0
                         else:
                             # Tray is empty while waiting for back
@@ -2242,7 +2245,7 @@ def yolo_worker_loop():
                             tracker[d]["hit_count"] += 1
                             tracker[d]["miss_count"] = 0
                         
-                        if tracker[d]["hit_count"] >= 1:
+                        if tracker[d]["hit_count"] >= 2:
                             tracker[d]["status"] = "CONFIRMED"
                             active_cycle_data["defects_detected"].add(d)
 
@@ -2254,9 +2257,7 @@ def yolo_worker_loop():
                                 to_remove.append(d)
                             elif info["status"] == "CONFIRMED" and info["miss_count"] >= 5:
                                 to_remove.append(d)
-                                # active_cycle_data["defects_detected"].discard(d) # NEVER DISCARD
-                                if d == "hole_missing" or d == "hole_spec_error":
-                                    active_cycle_data["defects_detected"].discard(d)
+                                active_cycle_data["defects_detected"].discard(d)
                     
                     for d in to_remove:
                         del tracker[d]
@@ -2269,10 +2270,13 @@ def yolo_worker_loop():
                         current_defects.append("out_of_bounds")
                     current_cycle["defects"] = current_defects
                     
-                    # Override instruction if defect is confirmed (triggers UI flash)
+                    # Override instruction if defect is confirmed
                     if active_cycle_data["defects_detected"] and state != "WAITING_REMOVE":
                         current_cycle["instruction_color"] = "red"
                         current_cycle["result"] = "NG"
+                    elif state != "WAITING_REMOVE" and not current_cycle["status"].startswith("Finished Cycle"):
+                        if current_cycle["result"] == "NG":
+                            current_cycle["result"] = "Awaiting analysis..."
                     if active_cycle_data["temp_folder"] is not None:
                         active_cycle_data["max_holes_detected"] = min(2, max(active_cycle_data["max_holes_detected"], frame_holes))
             if needs_reset:

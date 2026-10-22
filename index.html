@@ -1732,8 +1732,9 @@
                 const holesEl = document.getElementById('ui-holes-count');
                 holesEl.textContent = holes + ' / 2';
                 
-                const isAnalyzing = data.status.toLowerCase().includes("analyzing") || data.status.toLowerCase().includes("capturing");
-                const holesMissing = (isAnalyzing && (holes < 2)) || (data.defects && (data.defects.includes('hole_missing') || data.defects.includes('holes_missing')));
+                const isAnalyzing = (data.status && (data.status.toLowerCase().includes("analyzing") || data.status.toLowerCase().includes("capturing")));
+                const isBackState = data.capture_state === 'WAITING_BACK' || (data.status && data.status.toLowerCase().includes('back'));
+                const holesMissing = (isBackState && isAnalyzing && (holes < 2)) || (data.defects && (data.defects.includes('hole_missing') || data.defects.includes('holes_missing')));
                 if (holesMissing) {
                     holesEl.style.color = 'var(--accent-red)';
                 } else {
@@ -1885,17 +1886,27 @@
                 let isNG = false;
                 let isOK = false;
 
-                // Check if door is being removed or waiting for a new one, so we can hide the flash
-                const isWaiting = data.instruction === 'WAITING FOR DOOR' || data.instruction === 'PLACE FUEL DOOR (FRONT)' || data.status === 'Waiting for Front Panel' || data.instruction_color === 'orange' || (data.status && data.status.toLowerCase().includes('removed'));
+                // Identify actual defects (excluding positioning warnings like out_of_bounds)
+                const actualDefects = (data.defects || []).filter(d => d !== 'out_of_bounds');
+                const defectWarningMessages = warningMessages.filter(msg => msg !== 'DOOR OUT OF BOUNDS');
 
-                if (!isWaiting) {
-                    if (warningMessages.length > 0 || (data.defects && data.defects.length > 0)) {
+                // Check whether part is actively waiting to be placed or handled
+                const isHandlingOrWaiting = data.capture_state === 'WAITING_FRONT' 
+                    || data.instruction === 'WAITING FOR DOOR' 
+                    || data.instruction === 'WAITING FOR PART'
+                    || data.instruction === 'PLACE FUEL DOOR (FRONT)' 
+                    || data.instruction === 'FLIP TO BACK SIDE'
+                    || data.instruction === 'PLEASE FLIP DOOR TO BACK SIDE'
+                    || (data.status && (data.status.toLowerCase().includes('waiting') || data.status.toLowerCase().includes('awaiting')));
+
+                if (actualDefects.length > 0 || defectWarningMessages.length > 0) {
+                    if (!isHandlingOrWaiting) {
                         isNG = true;
-                    } else if (data.instruction_color === 'red' || data.result === 'NG' || data.result === 'FAIL' || data.instruction === 'NG') {
-                        isNG = true;
-                    } else if (data.result === 'OK' || data.result === 'PASS' || data.instruction === 'OK' || data.instruction_color === 'green' || (data.step3_status === 'OK' && !isNG)) {
-                        isOK = true;
                     }
+                } else if (data.result === 'NG' || data.result === 'FAIL' || data.instruction === 'NG - REMOVE THE DOOR') {
+                    isNG = true;
+                } else if (data.result === 'OK' || data.result === 'PASS' || data.instruction === 'OK - REMOVE THE DOOR' || (data.step3_status === 'OK' && !isNG && !isHandlingOrWaiting)) {
+                    isOK = true;
                 }
 
                 if (leftSignal && rightSignal) {
@@ -1905,7 +1916,7 @@
                         leftText.textContent = 'NG';
                         rightText.textContent = 'NG';
 
-                        const badgesHTML = warningMessages.map(msg => `<div class="side-signal-defect-badge">${msg}</div>`).join('');
+                        const badgesHTML = defectWarningMessages.map(msg => `<div class="side-signal-defect-badge">${msg}</div>`).join('');
                         if (leftDefects) leftDefects.innerHTML = badgesHTML;
                         if (rightDefects) rightDefects.innerHTML = badgesHTML;
                     } else if (isOK) {
