@@ -1,16 +1,16 @@
 ai:
   class_confidences:
     # --- Panel classes ---
-    back: 0.80
-    circle_back: 0.75
-    cricle_back: 0.75      # model class ID typo in model
-    circle_front: 0.75
-    cricle_front: 0.75     # typo alias
-    front: 0.80
-    polygen_back: 0.80
-    polygen_front: 0.80
-    polygon_back: 0.80
-    polygon_front: 0.80
+    back: 0.40
+    circle_back: 0.40
+    cricle_back: 0.40      # model class ID typo in model
+    circle_front: 0.40
+    cricle_front: 0.40     # typo alias
+    front: 0.40
+    polygen_back: 0.40
+    polygen_front: 0.40
+    polygon_back: 0.40
+    polygon_front: 0.40
     # --- Hole / structural ---
     holes: 0.80
     hole_missing: 0.50

@@ -1548,11 +1548,18 @@ def yolo_worker_loop():
             frame_resized = frame_to_process.copy()
             
         try:
-            # Multi-model selection based on geometric auto-detection
+            # Multi-model selection: respect manual UI selection first, then locked cycle key, then auto-detection
             with lock:
                 locked_key = active_cycle_data.get("locked_model_key")
+                manual_key = ACTIVE_MODEL_KEY
                 
-            if locked_key and locked_key in PART_MODELS and PART_MODELS[locked_key]["model"] is not None and state != "WAITING_FRONT":
+            if manual_key and manual_key != "AUTO" and manual_key in PART_MODELS and PART_MODELS[manual_key]["model"] is not None:
+                active_model_key = manual_key
+                with lock:
+                    active_cycle_data["locked_model_key"] = manual_key
+                    current_cycle["locked_part_type"] = manual_key
+                    current_cycle["part_type"] = manual_key
+            elif locked_key and locked_key in PART_MODELS and PART_MODELS[locked_key]["model"] is not None and state != "WAITING_FRONT":
                 active_model_key = locked_key
             else:
                 # In WAITING_FRONT or when searching: dynamically adjust to whatever part they are showing!
@@ -1564,7 +1571,7 @@ def yolo_worker_loop():
                 elif locked_key and locked_key in PART_MODELS:
                     active_model_key = locked_key
                 else:
-                    active_model_key = "CIRCLE" if detected_shape == "CIRCLE" else "POLYGEN"
+                    active_model_key = "RECTANGLE" if detected_shape == "RECTANGLE" else ("CIRCLE" if detected_shape == "CIRCLE" else "POLYGEN")
 
             active_yolo = PART_MODELS[active_model_key]["model"] or YOLO_MODEL
 
@@ -2144,7 +2151,7 @@ def yolo_worker_loop():
                                 active_cycle_data["front_type"] = "polygen"
                                 current_cycle["locked_part_type"] = "POLYGON"
                                 current_cycle["part_type"] = "POLYGON"
-                            elif back_class == "back" and active_cycle_data.get("front_type") == "standard":
+                            elif back_class == "back":
                                 active_cycle_data["locked_model_key"] = "RECTANGLE"
                                 current_cycle["locked_part_type"] = "RECTANGLE"
                                 current_cycle["part_type"] = "RECTANGLE"
