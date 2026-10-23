@@ -167,14 +167,14 @@ PART_MODELS = {
         "display_name": "CIRCLE"
     },
     "POLYGEN": {
-        "path": APP_CONFIG.get("ai", {}).get("models", {}).get("polygen", "best (2)polygen.pt"),
+        "path": APP_CONFIG.get("ai", {}).get("models", {}).get("polygen", "SSP_Polygen_Model_FuelDoor.pt"),
         "model": None,
         "front_classes": ["polygen_front", "polygon_front"],
         "back_classes": ["polygen_back", "polygon_back"],
         "display_name": "POLYGON"
     },
     "RECTANGLE": {
-        "path": APP_CONFIG.get("ai", {}).get("models", {}).get("rectangle", "SSP_Fueldoor_rectangle_v1.pt"),
+        "path": APP_CONFIG.get("ai", {}).get("models", {}).get("rectangle", "SSP_Rectangle_Model_FuelDoor.pt"),
         "model": None,
         "front_classes": ["front"],
         "back_classes": ["back"],
@@ -182,7 +182,7 @@ PART_MODELS = {
     }
 }
 ACTIVE_MODEL_KEY = "AUTO"
-MODEL_PATH = "best (2)polygen.pt"
+MODEL_PATH = "SSP_Polygen_Model_FuelDoor.pt"
 YOLO_MODEL = None
 OCR_ENGINE = None
 

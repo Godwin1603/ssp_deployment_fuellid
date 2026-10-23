@@ -34,8 +34,8 @@ ai:
   defect_merge_distance: 50
   models:
     circle: "SSP_cricle_model_fueldoor.pt"
-    polygen: "best (2)polygen.pt"
-    rectangle: "SSP_Fueldoor_rectangle_v1.pt"
+    polygen: "SSP_Polygen_Model_FuelDoor.pt"
+    rectangle: "SSP_Rectangle_Model_FuelDoor.pt"
   ocr_confidence_threshold: 0.1
   ocr_fallback_timeout: 3.5
   part_presence:
