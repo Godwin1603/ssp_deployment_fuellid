@@ -2580,16 +2580,12 @@ if __name__ == '__main__':
     logger.info("[System] Automatically starting PaddleOCR Server...")
     try:
         ocr_log = open("logs/ocr_server.log", "w", buffering=1)
-        # Try Python 3.12 (dedicated environment with working paddleocr)
+        # Try specific Python 3.11 launcher first (this runs the server with global GPU python)
         try:
-            py312_path = subprocess.check_output(["py", "-3.12", "-c", "import sys; print(sys.executable)"]).decode().strip()
-            ocr_process = subprocess.Popen([py312_path, "paddleocr_server.py"], stdout=ocr_log, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUNBUFFERED="1"))
+            py311_path = subprocess.check_output(["py", "-3.11", "-c", "import sys; print(sys.executable)"]).decode().strip()
+            ocr_process = subprocess.Popen([py311_path, "paddleocr_server.py"], stdout=ocr_log, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUNBUFFERED="1"))
         except Exception:
-            try:
-                py311_path = subprocess.check_output(["py", "-3.11", "-c", "import sys; print(sys.executable)"]).decode().strip()
-                ocr_process = subprocess.Popen([py311_path, "paddleocr_server.py"], stdout=ocr_log, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUNBUFFERED="1"))
-            except Exception:
-                ocr_process = subprocess.Popen([sys.executable, "paddleocr_server.py"], stdout=ocr_log, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUNBUFFERED="1"))
+            ocr_process = subprocess.Popen([sys.executable, "paddleocr_server.py"], stdout=ocr_log, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUNBUFFERED="1"))
             
         def cleanup_ocr():
             logger.info("[System] Shutting down PaddleOCR Server...")

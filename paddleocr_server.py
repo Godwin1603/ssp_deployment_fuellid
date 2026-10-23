@@ -11,15 +11,11 @@ import json
 import logging
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
-import sys
-import unittest.mock
-
-# Mock modelscope to avoid loading torch DLLs with WinError 127
-sys.modules["modelscope"] = unittest.mock.MagicMock()
 
 import cv2
 import numpy as np
 
+import sys
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [OCR-Server] %(message)s', stream=sys.stdout)
 
 # Custom handler to force flush
@@ -38,27 +34,20 @@ logging.info(f"GPU Acceleration Available: {has_gpu}")
 
 # Initialize using exact parameters as original code to preserve logic
 ocr = PaddleOCR(
-    enable_mkldnn=False,
-    lang='en'
+    use_angle_cls=False,
+    lang='en',
+    use_gpu=has_gpu
 )
 logging.info("PaddleOCR ready.")
 
 
 def run_ocr(image):
     """Run PaddleOCR and extract texts/scores."""
-    result = ocr.ocr(image)
+    result = ocr.ocr(image, cls=False)
     results = []
     if result and isinstance(result, list):
         for res in result:
             if not res:
-                continue
-            # PaddleOCR 3.x dict format:
-            if isinstance(res, dict):
-                texts = res.get('rec_texts', [])
-                scores = res.get('rec_scores', [])
-                for t, s in zip(texts, scores):
-                    if t:
-                        results.append({"rec_text": str(t).strip(), "rec_score": float(s)})
                 continue
             for line in res:
                 # 2.x format: [[box], ("text", score)]
@@ -67,12 +56,12 @@ def run_ocr(image):
                         "rec_text": line[1][0],
                         "rec_score": float(line[1][1])
                     })
+                # 3.x format dict handling just in case
                 elif isinstance(line, dict):
                     texts = line.get('rec_texts', [])
                     scores = line.get('rec_scores', [])
                     for t, s in zip(texts, scores):
-                        if t:
-                            results.append({"rec_text": str(t).strip(), "rec_score": float(s)})
+                        results.append({"rec_text": t, "rec_score": float(s)})
                         
     return results
 
@@ -83,54 +72,41 @@ class OCRHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path != '/ocr':
-            self.send_response(404)
-            self.end_headers()
-            return
-
-        content_length = int(self.headers.get('Content-Length', 0))
-        post_data = self.rfile.read(content_length)
+            self.send_response(404); self.end_headers(); return
 
         try:
-            # Expect JSON with base64-encoded image
-            body = json.loads(post_data.decode('utf-8'))
-            img_b64 = body.get('image', '')
-            img_bytes = base64.b64decode(img_b64)
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length)
+            data = json.loads(body)
+
+            # Image is sent as base64-encoded PNG/JPG
+            img_bytes = base64.b64decode(data['image'])
             nparr = np.frombuffer(img_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
             if img is None:
-                self.send_response(400)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": "Invalid image data"}).encode('utf-8'))
-                return
+                raise ValueError("Could not decode image")
 
             results = run_ocr(img)
 
+            response = json.dumps({"results": results}).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', len(response))
             self.end_headers()
-            self.wfile.write(json.dumps({"results": results}).encode('utf-8'))
+            self.wfile.write(response)
 
         except Exception as e:
-            logging.error(f"Error processing OCR request: {e}")
-            logging.error(traceback.format_exc())
+            logging.error(f"OCR error: {e}\n{traceback.format_exc()}")
+            err = json.dumps({"results": [], "error": str(e)}).encode()
             self.send_response(500)
             self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', len(err))
             self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
-
-
-def main():
-    server_address = ('127.0.0.1', 5001)
-    httpd = HTTPServer(server_address, OCRHandler)
-    logging.info(f"Starting PaddleOCR server on http://127.0.0.1:5001")
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        logging.info("Shutting down OCR server...")
-        httpd.server_close()
+            self.wfile.write(err)
 
 
 if __name__ == '__main__':
-    main()
+    server = HTTPServer(('127.0.0.1', 5001), OCRHandler)
+    logging.info("PaddleOCR server listening on http://127.0.0.1:5001")
+    server.serve_forever()
