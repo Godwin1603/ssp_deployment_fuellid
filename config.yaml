@@ -16,19 +16,19 @@ ai:
     hole_missing: 0.50
     hole_spec_error: 0.90
     # --- Defect classes ---
-    bulge: 0.70
-    damage: 0.60
-    dent: 0.70
+    bulge: 0.10
+    damage: 0.10
+    dent: 0.10
     flange_bend: 0.60
     flange_cut: 0.55
     forming_damage: 0.60
     leg_bend: 0.55
     line_mark: 0.55
-    scrap_mark: 0.55
+    scrap_mark: 0.10
     # --- OCR classes ---
     serial: 0.10
     serial_area: 0.10
-  default_yolo_confidence: 0.40
+  default_yolo_confidence: 0.10
   imgsz: 1024
   min_defect_area: 250
   max_defect_plate_ratio: 0.50
