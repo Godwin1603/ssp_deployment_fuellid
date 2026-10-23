@@ -336,11 +336,11 @@ def get_fueldoor_geometry(img):
     (fcx, fcy), radius = cv2.minEnclosingCircle(mc)
     circ_cov = m_area / (np.pi * radius * radius + 1e-5)
     
-    # 1. Circle: Round shape (aspect <= 1.22 and circular enclosure >= 0.60)
-    if aspect <= 1.22 and circ_cov >= 0.60:
+    # 1. Circle: Strictly round (aspect <= 1.08 and circular enclosure >= 0.88)
+    if aspect <= 1.08 and circ_cov >= 0.88:
         shape = 'CIRCLE'
-    # 2. Rectangle: Elongated shape with aspect >= 1.30
-    elif aspect >= 1.30:
+    # 2. Rectangle: Elongated shape with aspect >= 1.26
+    elif aspect >= 1.26:
         shape = 'RECTANGLE'
     # 3. Polygon: Intermediate shape
     else:
