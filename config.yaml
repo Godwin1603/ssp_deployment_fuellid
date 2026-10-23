@@ -49,13 +49,12 @@ camera:
     exposure: 60000.0
     gain: 1.0
     pixel_format: "BayerRG8"
-roi:
-- 10
-- 10
-- 460
-- 460
+  rtsp:
+    url: ''
+
 storage:
   retention_days: 30
 web:
   host: 0.0.0.0
   port: 5000
+roi:   # Full frame - covers entire camera feed (null = auto full-frame with 10px margin)
