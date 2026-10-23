@@ -191,6 +191,7 @@ OCR_ENGINE = None
 # -------------------------------
 YOLO_CONF_THRESHOLD = APP_CONFIG.get("ai", {}).get("default_yolo_confidence", 0.15)
 CLASS_CONF_THRESHOLDS = APP_CONFIG.get("ai", {}).get("class_confidences", {})
+YOLO_IMGSZ = int(APP_CONFIG.get("ai", {}).get("imgsz", 1024))
 # ROI Side Tolerance: % of frame width the bounding box can stick out on left/right before alarm
 # 0 = any edge touch triggers, higher = more tolerance. Adjustable live via UI.
 ROI_SIDE_TOLERANCE_PCT = APP_CONFIG.get("ai", {}).get("roi_side_tolerance_pct", 0)
@@ -1537,11 +1538,12 @@ def yolo_worker_loop():
             
         h_orig, w_orig = frame_to_process.shape[:2]
         
-        # Resize frame for faster YOLO inference (user trained at 432x432)
+        # Resize frame for YOLO inference (models are trained at 1024x1024)
+        target_imgsz = int(APP_CONFIG.get("ai", {}).get("imgsz", YOLO_IMGSZ))
         scale = 1.0
-        if w_orig > 432:
-            scale = 432 / w_orig
-            frame_resized = cv2.resize(frame_to_process, (432, int(h_orig * scale)))
+        if w_orig > target_imgsz:
+            scale = target_imgsz / w_orig
+            frame_resized = cv2.resize(frame_to_process, (target_imgsz, int(h_orig * scale)))
         else:
             frame_resized = frame_to_process.copy()
             
@@ -1570,8 +1572,8 @@ def yolo_worker_loop():
             min_thresh = min(CLASS_CONF_THRESHOLDS.values()) if CLASS_CONF_THRESHOLDS else YOLO_CONF_THRESHOLD
             run_thresh = min(float(min_thresh), float(YOLO_CONF_THRESHOLD))
             
-            # Note: YOLO internally pads 432 to 448 because the architecture requires multiples of 32
-            results = active_yolo(frame_resized, verbose=False, conf=run_thresh, imgsz=448)
+            # Run inference matching native training resolution (1024x1024)
+            results = active_yolo(frame_resized, verbose=False, conf=run_thresh, imgsz=target_imgsz)
 
             new_detections = []
             frame_holes = 0
