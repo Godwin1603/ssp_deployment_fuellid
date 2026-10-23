@@ -1871,6 +1871,13 @@ def yolo_worker_loop():
                     if class_name in ["dent", "bulge", "line_mark", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
                         if class_name in ["hole_missing", "hole_spec_error"] and not has_back_detected:
                             pass
+                        elif class_name in ["leg_bend", "flange_bend", "flange_cut"] and (has_front_detected and not has_back_detected):
+                            # Hinge legs and flange cuts only exist on the rear bracket
+                            pass
+                        elif class_name in ["bulge", "dent"] and (has_front_detected and not has_back_detected) and box_area < 800:
+                            # Filter tiny spot-weld and rivet impressions on the front flap (< 800 px)
+                            logger.info(f"Filtered out normal front spot-weld/texture misclassified as '{class_name}' (area={box_area})")
+                            pass
                         else:
                             frame_defects.append(class_name)
                         
@@ -2272,8 +2279,8 @@ def yolo_worker_loop():
                         current_defects.append("out_of_bounds")
                     current_cycle["defects"] = current_defects
                     
-                    # Override instruction if defect is confirmed
-                    if active_cycle_data["defects_detected"] and state != "WAITING_REMOVE":
+                    # Defect result assignment: only finalize to NG in WAITING_REMOVE or completion
+                    if active_cycle_data["defects_detected"] and state == "WAITING_REMOVE":
                         current_cycle["instruction_color"] = "red"
                         current_cycle["result"] = "NG"
                     elif state != "WAITING_REMOVE" and not current_cycle["status"].startswith("Finished Cycle"):
@@ -2573,12 +2580,16 @@ if __name__ == '__main__':
     logger.info("[System] Automatically starting PaddleOCR Server...")
     try:
         ocr_log = open("logs/ocr_server.log", "w", buffering=1)
-        # Try specific Python 3.11 launcher first (this runs the server with global GPU python)
+        # Try Python 3.12 (dedicated environment with working paddleocr)
         try:
-            py311_path = subprocess.check_output(["py", "-3.11", "-c", "import sys; print(sys.executable)"]).decode().strip()
-            ocr_process = subprocess.Popen([py311_path, "paddleocr_server.py"], stdout=ocr_log, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUNBUFFERED="1"))
+            py312_path = subprocess.check_output(["py", "-3.12", "-c", "import sys; print(sys.executable)"]).decode().strip()
+            ocr_process = subprocess.Popen([py312_path, "paddleocr_server.py"], stdout=ocr_log, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUNBUFFERED="1"))
         except Exception:
-            ocr_process = subprocess.Popen([sys.executable, "paddleocr_server.py"], stdout=ocr_log, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUNBUFFERED="1"))
+            try:
+                py311_path = subprocess.check_output(["py", "-3.11", "-c", "import sys; print(sys.executable)"]).decode().strip()
+                ocr_process = subprocess.Popen([py311_path, "paddleocr_server.py"], stdout=ocr_log, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUNBUFFERED="1"))
+            except Exception:
+                ocr_process = subprocess.Popen([sys.executable, "paddleocr_server.py"], stdout=ocr_log, stderr=subprocess.STDOUT, env=dict(os.environ, PYTHONUNBUFFERED="1"))
             
         def cleanup_ocr():
             logger.info("[System] Shutting down PaddleOCR Server...")

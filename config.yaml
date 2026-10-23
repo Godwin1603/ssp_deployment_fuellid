@@ -13,24 +13,24 @@ ai:
     polygon_front: 0.80
     # --- Hole / structural ---
     holes: 0.80
-    hole_missing: 0.30
+    hole_missing: 0.50
     hole_spec_error: 0.90
     # --- Defect classes ---
-    bulge: 0.25
-    damage: 0.25
-    dent: 0.25
+    bulge: 0.70
+    damage: 0.60
+    dent: 0.70
     flange_bend: 0.60
-    flange_cut: 0.40
-    forming_damage: 0.25
-    leg_bend: 0.40
-    line_mark: 0.40
-    scrap_mark: 0.40
+    flange_cut: 0.55
+    forming_damage: 0.60
+    leg_bend: 0.55
+    line_mark: 0.55
+    scrap_mark: 0.55
     # --- OCR classes ---
     serial: 0.10
     serial_area: 0.10
-  default_yolo_confidence: 0.25
+  default_yolo_confidence: 0.40
   imgsz: 1024
-  min_defect_area: 50
+  min_defect_area: 250
   max_defect_plate_ratio: 0.50
   defect_merge_distance: 50
   models:
@@ -48,13 +48,14 @@ camera:
   gige:
     exposure: 60000.0
     gain: 1.0
-    pixel_format: BayerRG8
-  rtsp:
-    url: ''
-
+    pixel_format: "BayerRG8"
+roi:
+- 10
+- 10
+- 460
+- 460
 storage:
   retention_days: 30
 web:
   host: 0.0.0.0
   port: 5000
-roi:   # Full frame - covers entire camera feed (null = auto full-frame with 10px margin)

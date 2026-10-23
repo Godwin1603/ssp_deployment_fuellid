@@ -1732,9 +1732,8 @@
                 const holesEl = document.getElementById('ui-holes-count');
                 holesEl.textContent = holes + ' / 2';
                 
-                const isAnalyzing = (data.status && (data.status.toLowerCase().includes("analyzing") || data.status.toLowerCase().includes("capturing")));
-                const isBackState = data.capture_state === 'WAITING_BACK' || (data.status && data.status.toLowerCase().includes('back'));
-                const holesMissing = (isBackState && isAnalyzing && (holes < 2)) || (data.defects && (data.defects.includes('hole_missing') || data.defects.includes('holes_missing')));
+                // Holes missing defect is confirmed when explicitly detected and verified in data.defects
+                const holesMissing = !!(data.defects && (data.defects.includes('hole_missing') || data.defects.includes('holes_missing')));
                 if (holesMissing) {
                     holesEl.style.color = 'var(--accent-red)';
                 } else {
@@ -1890,23 +1889,33 @@
                 const actualDefects = (data.defects || []).filter(d => d !== 'out_of_bounds');
                 const defectWarningMessages = warningMessages.filter(msg => msg !== 'DOOR OUT OF BOUNDS');
 
-                // Check whether part is actively waiting to be placed or handled
-                const isHandlingOrWaiting = data.capture_state === 'WAITING_FRONT' 
+                // Check whether cycle is still in progress (waiting, placing, flipping, analyzing)
+                const isCycleInProgress = data.capture_state === 'WAITING_FRONT' 
+                    || data.capture_state === 'WAITING_BACK'
                     || data.instruction === 'WAITING FOR DOOR' 
                     || data.instruction === 'WAITING FOR PART'
                     || data.instruction === 'PLACE FUEL DOOR (FRONT)' 
                     || data.instruction === 'FLIP TO BACK SIDE'
                     || data.instruction === 'PLEASE FLIP DOOR TO BACK SIDE'
-                    || (data.status && (data.status.toLowerCase().includes('waiting') || data.status.toLowerCase().includes('awaiting')));
+                    || data.instruction === 'DETECTING SERIAL NUMBER...'
+                    || data.instruction === 'CHECKING SERIAL...'
+                    || (data.status && (data.status.toLowerCase().includes('waiting') || data.status.toLowerCase().includes('awaiting') || data.status.toLowerCase().includes('reading')));
 
-                if (actualDefects.length > 0 || defectWarningMessages.length > 0) {
-                    if (!isHandlingOrWaiting) {
+                const isCycleFinalized = data.capture_state === 'WAITING_REMOVE' 
+                    || (data.status && data.status.startsWith('Finished Cycle'))
+                    || (data.instruction && data.instruction.includes('REMOVE THE DOOR'));
+
+                // Side Signal Bars should ONLY signal OK/NG when the cycle has actually evaluated and completed
+                if (isCycleFinalized) {
+                    if (data.result === 'NG' || data.result === 'FAIL' || data.instruction === 'NG - REMOVE THE DOOR') {
+                        isNG = true;
+                    } else if (data.result === 'OK' || data.result === 'PASS' || data.instruction === 'OK - REMOVE THE DOOR') {
+                        isOK = true;
+                    }
+                } else if (!isCycleInProgress) {
+                    if (actualDefects.length > 0 && (data.result === 'NG' || data.result === 'FAIL')) {
                         isNG = true;
                     }
-                } else if (data.result === 'NG' || data.result === 'FAIL' || data.instruction === 'NG - REMOVE THE DOOR') {
-                    isNG = true;
-                } else if (data.result === 'OK' || data.result === 'PASS' || data.instruction === 'OK - REMOVE THE DOOR' || (data.step3_status === 'OK' && !isNG && !isHandlingOrWaiting)) {
-                    isOK = true;
                 }
 
                 if (leftSignal && rightSignal) {
