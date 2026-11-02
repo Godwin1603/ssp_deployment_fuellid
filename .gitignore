@@ -1,6 +1,7 @@
 venv/
 __pycache__/
 logs/
+ng_logs/
 fuel_door_data/
 nssm.exe
 *.pt
