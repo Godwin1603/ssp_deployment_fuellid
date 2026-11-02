@@ -1400,9 +1400,9 @@ def video_processing_loop():
             with lock:
                 latest_raw_frame = frame.copy()
 
-            # Resize frame to standard 480px width first to speed up JPEG encoding and keep annotations crisp
+            # Resize frame to standard 640px width for sharp text and crisp annotations
             h_ann, w_ann = frame.shape[:2]
-            UI_WIDTH = 480 # Reduced resolution for UI to prevent getting stuck
+            UI_WIDTH = 640  # 640px provides crisp readable text with fast encoding
             if w_ann > UI_WIDTH:
                 scale_ann = UI_WIDTH / w_ann
                 annotated_frame = cv2.resize(frame, (UI_WIDTH, int(h_ann * scale_ann)))
@@ -1468,11 +1468,11 @@ def video_processing_loop():
 
                 # Draw label without confidence percentage (normalize typos like cricle -> circle)
                 label = class_name.replace("cricle", "circle").replace("polygen", "polygon").replace("_", " ").title()
-                (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+                (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 0.45, 1)
                 text_x = x1
                 text_y = max(y1 - 5, text_h + 5)
-                cv2.rectangle(annotated_frame, (text_x, text_y - text_h - 4), (text_x + text_w, text_y + 2), color, -1)
-                cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 2)
+                cv2.rectangle(annotated_frame, (text_x, text_y - text_h - 4), (text_x + text_w + 4, text_y + 2), color, -1)
+                cv2.putText(annotated_frame, label, (text_x + 2, text_y - 1), cv2.FONT_HERSHEY_DUPLEX, 0.45, text_color, 1, cv2.LINE_AA)
 
             # --- Draw MOCK Box if present ---
             if MOCK_BBOX_PCT is not None:
@@ -1535,8 +1535,8 @@ def video_processing_loop():
             cv2.putText(annotated_frame, roi_label, (rx + 3, ry - 3), cv2.FONT_HERSHEY_SIMPLEX, font_scale, roi_color, 2)
             # ---------------------------------
 
-            # Encode annotated frame to JPEG with lower quality for UI performance
-            ret2, buffer = cv2.imencode('.jpg', annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
+            # Encode annotated frame to JPEG with high quality (80) for sharp text
+            ret2, buffer = cv2.imencode('.jpg', annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             if ret2:
                 with lock:
                     latest_annotated_frame = buffer.tobytes()
