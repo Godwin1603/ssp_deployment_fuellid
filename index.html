@@ -1077,6 +1077,28 @@
                 </div>
             </div>
 
+            <!-- SU21 Distance Gauge (Only for Rectangle Back) -->
+            <div class="sidebar-section" id="distance-section" style="transition: border-color 0.3s; display: none;">
+                <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>Distance Gauge (SU21)</span>
+                    <span id="ui-distance-status-badge" style="font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; background: #e2e8f0; color: #475569;">INACTIVE</span>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px;">
+                    <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                        <span style="color: var(--text-muted); font-size: 13px; font-weight: 700;">Measured:</span>
+                        <span id="ui-distance-val" style="font-weight: 900; font-size: 24px; color: var(--text-main);">--.-- mm</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px;">
+                        <span style="color: var(--text-muted); font-weight: 600;">CAD Nominal:</span>
+                        <span style="font-weight: 700; color: var(--text-main);">140.77 ± 1.00 mm</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px;">
+                        <span style="color: var(--text-muted); font-weight: 600;">Deviation:</span>
+                        <span id="ui-distance-dev" style="font-weight: 700; color: var(--text-main);">--.-- mm</span>
+                    </div>
+                </div>
+            </div>
+
             <!-- Door Status & Defects -->
             <div class="sidebar-section" id="defects-section" style="transition: border-color 0.3s;">
                 <div class="section-title">Door Status & Defects</div>
@@ -1084,6 +1106,10 @@
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                         <span style="color: var(--text-muted); font-size: 18px; font-weight: 700;">Holes Count (Target: 2):</span>
                         <span id="ui-holes-count" style="font-weight: 900; font-size: 22px; color: var(--text-main);">0 / 2</span>
+                    </div>
+                    <div id="ui-distance-defect-row" style="display: none; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span style="color: var(--text-muted); font-size: 18px; font-weight: 700;">Distance Spec:</span>
+                        <span id="ui-distance-defect-status" style="font-weight: 900; font-size: 22px; color: var(--accent-green);">PASS</span>
                     </div>
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                         <span style="color: var(--text-muted); font-size: 18px; font-weight: 700;">Dent Defect:</span>
@@ -1779,6 +1805,12 @@
                 const scrapMarkEl = document.getElementById('ui-scrap-mark-status');
                 const legBendEl = document.getElementById('ui-leg-bend-status');
                 const holeSpecErrorEl = document.getElementById('ui-hole-spec-error-status');
+                const distSection = document.getElementById('distance-section');
+                const distValEl = document.getElementById('ui-distance-val');
+                const distDevEl = document.getElementById('ui-distance-dev');
+                const distBadgeEl = document.getElementById('ui-distance-status-badge');
+                const distDefectRow = document.getElementById('ui-distance-defect-row');
+                const distDefectStatus = document.getElementById('ui-distance-defect-status');
                 
                 const hasDent = data.defects && (data.defects.includes('bent') || data.defects.includes('dent'));
                 const hasBulge = data.defects && (data.defects.includes('bulge') || data.defects.includes('bukge'));
@@ -1791,6 +1823,38 @@
                 const hasLegBend = data.defects && data.defects.includes('leg_bend');
                 const hasHoleSpecError = data.defects && data.defects.includes('hole_spec_error');
                 const hasOutOfBounds = data.defects && data.defects.includes('out_of_bounds');
+                const hasDistanceNG = data.defects && (data.defects.includes('distance_out_of_spec') || data.defects.includes('distance_ng'));
+                const isRectanglePart = (data.part_type === 'RECTANGLE' || data.locked_part_type === 'RECTANGLE');
+                const distData = data.gauge_distance;
+
+                if (isRectanglePart && distData && distData.is_valid) {
+                    if (distSection) distSection.style.display = 'block';
+                    if (distDefectRow) distDefectRow.style.display = 'flex';
+                    if (distValEl && distData.mm !== null && distData.mm !== undefined) {
+                        distValEl.textContent = distData.mm.toFixed(2) + ' mm';
+                    }
+                    if (distDevEl && distData.dev !== null && distData.dev !== undefined) {
+                        const sign = distData.dev >= 0 ? '+' : '';
+                        distDevEl.textContent = sign + distData.dev.toFixed(2) + ' mm';
+                    }
+                    if (distBadgeEl) {
+                        if (distData.status === 'OK') {
+                            distBadgeEl.textContent = 'PASS';
+                            distBadgeEl.style.background = '#dcfce7';
+                            distBadgeEl.style.color = '#15803d';
+                        } else {
+                            distBadgeEl.textContent = 'FAIL';
+                            distBadgeEl.style.background = '#fee2e2';
+                            distBadgeEl.style.color = '#b91c1c';
+                        }
+                    }
+                    if (distDefectStatus) {
+                        updateDefectStatus(distDefectStatus, hasDistanceNG || distData.status !== 'OK');
+                    }
+                } else {
+                    if (distSection) distSection.style.display = 'none';
+                    if (distDefectRow) distDefectRow.style.display = 'none';
+                }
                 
                 const updateDefectStatus = (el, hasDefect) => {
                     if (el) {
@@ -1826,6 +1890,7 @@
                 if (hasScrapMark) warningMessages.push("SCRAP MARK DETECTED");
                 if (hasLegBend) warningMessages.push("LEG BEND DETECTED");
                 if (hasHoleSpecError) warningMessages.push("HOLE SPEC ERROR");
+                if (hasDistanceNG) warningMessages.push("DISTANCE OUT OF SPEC");
                 if (holesMissing) {
                     warningMessages.push("HOLES MISSING");
                 }

@@ -57,7 +57,9 @@ def create_inspection_report(
     confidence,
     defects=None,
     defect_image_path=None,
-    output_path=None
+    output_path=None,
+    distance_data=None,
+    **kwargs
 ):
     """Generates a professional A4 PDF inspection report."""
     
@@ -320,6 +322,15 @@ def create_inspection_report(
         [Paragraph("<b>Confidence:</b>", cell_style), Paragraph(conf_str, cell_style)],
         [Paragraph("<b>Inspection Timestamp:</b>", cell_style), Paragraph(f"{date_str} {time_str}", cell_style)]
     ]
+    if distance_data and distance_data.get("mm") is not None:
+        d_val = float(distance_data["mm"])
+        d_nom = float(distance_data.get("nominal_mm", 140.769))
+        d_tol = float(distance_data.get("tolerance_mm", 1.0))
+        d_dev = float(distance_data.get("dev", d_val - d_nom))
+        d_stat = distance_data.get("status", "OK")
+        d_color = "#10b981" if d_stat == "OK" else "#ef4444"
+        d_str = f"{d_val:.2f} mm (<font color='{d_color}'><b>{d_stat}</b></font>, Dev: {d_dev:+.2f} mm)"
+        result_details.append([Paragraph("<b>SU21 Distance Gauge:</b>", cell_style), Paragraph(d_str, cell_style)])
     
     result_details_table = Table(result_details, colWidths=[140, 183.27])
     result_details_table.setStyle(TableStyle([

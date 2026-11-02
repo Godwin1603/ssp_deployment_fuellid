@@ -187,6 +187,19 @@ YOLO_MODEL = None
 OCR_ENGINE = None
 
 # -------------------------------
+# SU21 Distance Gauge (Rectangle Model Only)
+# -------------------------------
+SU21_GAUGE = None
+try:
+    from su21_gauge import SU21DistanceGauge
+    SU21_GAUGE = SU21DistanceGauge()
+    print("SU21 Distance Gauge loaded successfully.")
+except Exception as e:
+    print(f"Failed to load SU21 Distance Gauge: {e}")
+
+current_distance_overlay = None
+
+# -------------------------------
 # Detection Thresholds (adjust here)
 # -------------------------------
 YOLO_CONF_THRESHOLD = APP_CONFIG.get("ai", {}).get("default_yolo_confidence", 0.15)
@@ -228,7 +241,8 @@ current_cycle = {
     "instruction": "WAITING FOR DOOR",
     "instruction_color": "blue",
     "part_type": "AUTO",
-    "locked_part_type": None
+    "locked_part_type": None,
+    "gauge_distance": None
 }
 
 active_cycle_data = {
@@ -247,6 +261,7 @@ active_cycle_data = {
     "serial_frames_count": 0,
     "frames_since_last_ocr_crop": 10,
     "state": "WAITING_FRONT",
+    "distance_measurement": None,
     "front_box_center": None,
     "back_box_center": None,
     "remove_frames_count": 0,
@@ -268,7 +283,14 @@ latest_annotated_frame = None
 # Initialization Helper
 # -------------------------------
 def init_models():
-    global PART_MODELS, YOLO_MODEL, OCR_ENGINE
+    global PART_MODELS, YOLO_MODEL, OCR_ENGINE, SU21_GAUGE
+    if SU21_GAUGE is None:
+        try:
+            from su21_gauge import SU21DistanceGauge
+            SU21_GAUGE = SU21DistanceGauge()
+            print("SU21 Distance Gauge initialized in init_models.")
+        except Exception as e:
+            print(f"Warning: Could not initialize SU21 Distance Gauge: {e}")
     for key, pinfo in PART_MODELS.items():
         if pinfo["model"] is None:
             m_path = pinfo["path"]
@@ -678,6 +700,17 @@ def finalize_report_and_rename(c_data):
 
         # Create report PDF in a separate process to avoid GIL lag
         import subprocess, json, sys
+        dist_meta = None
+        if c_data.get("distance_measurement"):
+            dm = c_data["distance_measurement"]
+            dist_meta = {
+                "mm": float(dm["mm"]) if dm.get("mm") is not None else None,
+                "dev": float(dm["dev"]) if dm.get("dev") is not None else None,
+                "status": str(dm.get("status", "")),
+                "nominal_mm": float(dm.get("nominal_mm", 140.769)),
+                "tolerance_mm": float(dm.get("tolerance_mm", 1.0))
+            }
+
         report_kwargs = {
             "serial_number": serial,
             "model_name": c_data.get("locked_model_key") or "Fuel Door",
@@ -691,7 +724,8 @@ def finalize_report_and_rename(c_data):
             "confidence": conf,
             "defects": defects,
             "defect_image_path": defect_frame,
-            "output_path": temp_report_path
+            "output_path": temp_report_path,
+            "distance_data": dist_meta
         }
         subprocess.run([sys.executable, "run_report.py", json.dumps(report_kwargs)])
 
@@ -753,8 +787,10 @@ def check_and_finalize_cycle(c_data):
         threading.Thread(target=finalize_report_and_rename, args=(c_data,), daemon=True).start()
 
 def reset_cycle_state():
-    global current_cycle, active_cycle_data, cycle_count
+    global current_cycle, active_cycle_data, cycle_count, current_distance_overlay
     with lock:
+        current_distance_overlay = None
+        current_cycle["gauge_distance"] = None
         current_cycle["status"] = "Waiting for Fuel Door"
         current_cycle["cycle_number"] = f"#{cycle_count:03d}"
         current_cycle["step1_status"] = "Pending"
@@ -798,6 +834,7 @@ def reset_cycle_state():
             "ocr_start_time": None,
             "front_type": None,  # "standard", "circle", or "polygen"
             "defect_frame_path": None,  # Path to annotated frame saved when first defect is detected on front
+            "distance_measurement": None,
             "locked_model_key": None if ACTIVE_MODEL_KEY == "AUTO" else ACTIVE_MODEL_KEY,
             "shape_votes": {},
             "front_missing_frames": 0
@@ -1448,6 +1485,12 @@ def video_processing_loop():
                 cv2.rectangle(annotated_frame, (mbx1, mby1 - th - 5), (mbx1 + tw, mby1), (255, 0, 255), -1)
                 cv2.putText(annotated_frame, "MOCK", (mbx1, mby1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.7 * scale_ann, (255, 255, 255), max(1, int(2 * scale_ann)))
 
+            # --- Draw Distance Gauge Overlay on Live UI Feed (Rectangle Back only) ---
+            with lock:
+                dist_overlay = current_distance_overlay
+            if dist_overlay and dist_overlay.get("is_valid") and SU21_GAUGE is not None:
+                SU21_GAUGE.draw_overlay(annotated_frame, dist_overlay, scale=scale_ann)
+
             # --- Draw ROI on Live UI Feed ---
             roi_cfg = APP_CONFIG.get("roi")
             rx, ry, rw, rh = roi_cfg if roi_cfg else (0, 0, 0, 0)
@@ -1518,7 +1561,7 @@ def video_processing_loop():
 # Dedicated Background YOLO Worker Thread
 # -------------------------------
 def yolo_worker_loop():
-    global YOLO_MODEL, latest_raw_frame, current_detections, active_cycle_data, current_cycle
+    global YOLO_MODEL, latest_raw_frame, current_detections, active_cycle_data, current_cycle, current_distance_overlay, SU21_GAUGE
     init_models()
     
     _debug_counter = 0
@@ -1914,6 +1957,35 @@ def yolo_worker_loop():
                             back_class = "back"
                         # Do not set back_box to avoid false mismatch triggers on circle vs standard,
                         # but we still mark back_class to indicate the back was conceptually captured.
+
+            # --- SU21 Distance Measurement Gauge (Only for RECTANGLE when back class is detected) ---
+            # Requirement:
+            # "this distance need to work when back class is detected...
+            #  if no back class ..then no distance feature ..integrate it ....this is only for rectange part..not for circle or polygen"
+            is_rectangle_model = (active_model_key == "RECTANGLE")
+            is_rectangle_back = is_rectangle_model and (back_class == "back" or any(d["class_name"] == "back" for d in new_detections))
+
+            distance_measurement_res = None
+            if is_rectangle_back and SU21_GAUGE is not None:
+                try:
+                    distance_measurement_res = SU21_GAUGE.measure(frame_to_process)
+                    if distance_measurement_res.get("is_valid"):
+                        if distance_measurement_res["status"] == "NG":
+                            frame_defects.append("distance_out_of_spec")
+                            has_defect_detected = True
+                            # Draw overlay on saved annotated frame and log NG
+                            SU21_GAUGE.draw_overlay(annotated_frame, distance_measurement_res, scale=1.0)
+                            SU21_GAUGE.log_ng(distance_measurement_res, annotated_frame)
+                except Exception as g_err:
+                    logger.error(f"[SU21 Gauge] Error during measurement: {g_err}")
+
+            with lock:
+                current_distance_overlay = distance_measurement_res
+                current_cycle["gauge_distance"] = distance_measurement_res
+                if distance_measurement_res and distance_measurement_res.get("is_valid"):
+                    active_cycle_data["distance_measurement"] = distance_measurement_res
+                    if distance_measurement_res["status"] == "NG":
+                        active_cycle_data["defects_detected"].add("distance_out_of_spec")
                         
             # --- Defect Frame Save ---
             # When defects are detected on the front panel, save the annotated frame once per cycle.
