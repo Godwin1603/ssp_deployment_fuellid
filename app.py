@@ -262,9 +262,12 @@ active_cycle_data = {
     "frames_since_last_ocr_crop": 10,
     "state": "WAITING_FRONT",
     "distance_measurement": None,
+    "distance_overlay_drawn": False,
+    "latest_back_frame": None,
     "front_box_center": None,
     "back_box_center": None,
     "remove_frames_count": 0,
+    "back_confirmed_frames": 0,
     "no_panel_frames_count": 0,  # Tracks consecutive frames with sub-features but no front/back panel
     "ocr_start_time": None,  # Timestamp when CHECKING_OCR state began (for timeout)
     "front_type": None,
@@ -549,6 +552,32 @@ def process_ocr_async(crop_img, temp_folder, crop_num, c_data):
                         if len(winning_votes) >= 3:
                             current_cycle["vote_3"] = f"{winning_votes[2]['text']} ({winning_votes[2]['confidence']:.1f}%)"
 
+                    # Immediately capture back image and turn Step 3 to OK so UI updates without delay
+                    if c_data.get("temp_folder") and not c_data.get("back_path"):
+                        back_img = None
+                        if c_data.get("latest_back_frame") is not None:
+                            back_img = c_data["latest_back_frame"].copy()
+                        elif latest_raw_frame is not None:
+                            back_img = latest_raw_frame.copy()
+
+                        if back_img is not None:
+                            dist_res = c_data.get("distance_measurement")
+                            if dist_res and dist_res.get("is_valid") and SU21_GAUGE is not None:
+                                SU21_GAUGE.draw_overlay(back_img, dist_res, scale=1.0)
+                                c_data["distance_overlay_drawn"] = True
+                            back_file = os.path.join(c_data["temp_folder"], "back.jpg")
+                            cv2.imwrite(back_file, back_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                            c_data["back_path"] = back_file
+
+                    # Always set step3 OK and transition state when OCR finalizes.
+                    # Use is_active OR check serial match to cover the race where
+                    # reset_cycle_state() replaced active_cycle_data before this thread ran.
+                    # Guard: only update current_cycle if the displayed serial matches this result
+                    # (prevents a stale OCR thread from updating a brand-new cycle's status).
+                    c_data["state"] = "WAITING_REMOVE"
+                    if is_active or current_cycle.get("serial") == final_serial:
+                        current_cycle["step3_status"] = "OK"
+
                     logger.info(f"[OCR Thread] Finalized: {final_serial} ({final_conf:.1f}%)")
                     check_and_finalize_cycle(c_data)
         else:
@@ -657,13 +686,14 @@ def finalize_report_and_rename(c_data):
 
         # Now that we have the final serial number and pass/fail status, instruct operator
         with lock:
-            if status == "PASS":
-                current_cycle["instruction"] = "OK - REMOVE THE DOOR"
-                current_cycle["instruction_color"] = "green"
-            else:
-                current_cycle["instruction"] = "NG - REMOVE THE DOOR"
-                current_cycle["instruction_color"] = "red"
-            current_cycle["status"] = "Saving report..."
+            if c_data is active_cycle_data:
+                if status == "PASS":
+                    current_cycle["instruction"] = "OK - REMOVE THE PLATE"
+                    current_cycle["instruction_color"] = "green"
+                else:
+                    current_cycle["instruction"] = "NG - REMOVE THE PLATE"
+                    current_cycle["instruction_color"] = "red"
+                current_cycle["status"] = "Saving report..."
         
         temp_dir = active_cycle_data["temp_folder"]
         serial = active_cycle_data["serial_number"]
@@ -697,6 +727,18 @@ def finalize_report_and_rename(c_data):
 
         # Path of the report within the temp folder matching the folder_name
         temp_report_path = os.path.join(temp_dir, f"{folder_name}.pdf")
+
+        # Ensure back image has distance overlay if distance measurement was recorded and not yet drawn
+        if c_data.get("distance_measurement") and c_data["distance_measurement"].get("is_valid") and not c_data.get("distance_overlay_drawn") and SU21_GAUGE is not None:
+            if back and os.path.exists(back):
+                try:
+                    back_img = cv2.imread(back)
+                    if back_img is not None:
+                        SU21_GAUGE.draw_overlay(back_img, c_data["distance_measurement"], scale=1.0)
+                        cv2.imwrite(back, back_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                        c_data["distance_overlay_drawn"] = True
+                except Exception as b_err:
+                    logger.error(f"[Finalize] Error updating back image overlay: {b_err}")
 
         # Create report PDF in a separate process to avoid GIL lag
         import subprocess, json, sys
@@ -771,8 +813,15 @@ def finalize_report_and_rename(c_data):
             else:
                 cycle_count += 1
 
-            current_cycle["result"] = status
-            current_cycle["status"] = "Finished Cycle for " + serial
+            if c_data is active_cycle_data:
+                current_cycle["result"] = status
+                current_cycle["status"] = "Finished Cycle for " + serial
+                if status == "PASS":
+                    current_cycle["instruction"] = "OK - REMOVE THE PLATE"
+                    current_cycle["instruction_color"] = "green"
+                else:
+                    current_cycle["instruction"] = "NG - REMOVE THE PLATE"
+                    current_cycle["instruction_color"] = "red"
 
     except Exception as e:
         print(f"[Finalize Thread] Error: {e}")
@@ -830,11 +879,14 @@ def reset_cycle_state():
             "front_first_seen_time": None,
             "back_first_seen_time": None,
             "remove_frames_count": 0,
+            "back_confirmed_frames": 0,
             "no_panel_frames_count": 0,
             "ocr_start_time": None,
             "front_type": None,  # "standard", "circle", or "polygen"
             "defect_frame_path": None,  # Path to annotated frame saved when first defect is detected on front
             "distance_measurement": None,
+            "distance_overlay_drawn": False,
+            "latest_back_frame": None,
             "locked_model_key": None if ACTIVE_MODEL_KEY == "AUTO" else ACTIVE_MODEL_KEY,
             "shape_votes": {},
             "front_missing_frames": 0
@@ -1581,14 +1633,17 @@ def yolo_worker_loop():
             
         h_orig, w_orig = frame_to_process.shape[:2]
         
-        # Resize frame for YOLO inference (models are trained at 1024x1024)
+        # Resize frame for YOLO inference: Fit with black edges in 1024x1024
         target_imgsz = int(APP_CONFIG.get("ai", {}).get("imgsz", YOLO_IMGSZ))
-        scale = 1.0
-        if w_orig > target_imgsz:
-            scale = target_imgsz / w_orig
-            frame_resized = cv2.resize(frame_to_process, (target_imgsz, int(h_orig * scale)))
-        else:
-            frame_resized = frame_to_process.copy()
+        scale = min(target_imgsz / w_orig, target_imgsz / h_orig)
+        new_w = int(round(w_orig * scale))
+        new_h = int(round(h_orig * scale))
+        pad_x = (target_imgsz - new_w) // 2
+        pad_y = (target_imgsz - new_h) // 2
+        
+        frame_resized = np.zeros((target_imgsz, target_imgsz, 3), dtype=np.uint8)
+        frame_scaled = cv2.resize(frame_to_process, (new_w, new_h))
+        frame_resized[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = frame_scaled
             
         try:
             # Multi-model selection: respect manual UI selection first, then locked cycle key, then auto-detection
@@ -1684,21 +1739,36 @@ def yolo_worker_loop():
                             continue
                         if class_name in PANEL_CLASSES:
                             xyxy_resized = box.xyxy[0].cpu().numpy()
-                            bx1 = int(xyxy_resized[0] / scale)
-                            by1 = int(xyxy_resized[1] / scale)
-                            bx2 = int(xyxy_resized[2] / scale)
-                            by2 = int(xyxy_resized[3] / scale)
+                            bx1 = int((xyxy_resized[0] - pad_x) / scale)
+                            by1 = int((xyxy_resized[1] - pad_y) / scale)
+                            bx2 = int((xyxy_resized[2] - pad_x) / scale)
+                            by2 = int((xyxy_resized[3] - pad_y) / scale)
+                            bx1, by1 = max(0, bx1), max(0, by1)
+                            bx2, by2 = min(w_orig, bx2), min(h_orig, by2)
                             
-                            # ROI BOUNDARY DETECTION (WITH ADJUSTABLE SIDE TOLERANCE)
+                            if bx2 <= bx1 or by2 <= by1:
+                                continue
+
+                            # Verify part presence first - do NOT trigger ROI alarm on empty tray hallucinations
+                            presence_cfg = APP_CONFIG.get("ai", {}).get("part_presence", {})
+                            blue_t = presence_cfg.get("blue_thresh", 0.75)
+                            metal_t = presence_cfg.get("metal_min_ratio", 0.15)
+                            lap_t = presence_cfg.get("laplacian_variance_min", 150.0)
+                            roi_patch = frame_to_process[by1:by2, bx1:bx2]
+                            if not has_part(roi_patch, blue_t, metal_t, lap_t):
+                                continue
+
+                            # ROI BOUNDARY DETECTION (WITH ADJUSTABLE SIDE/VERTICAL TOLERANCE)
                             # The green box is at rx, ry.
                             # We mathematically expand the invisible alarm trigger line outwards 
-                            # on the left and right by ROI_SIDE_TOLERANCE_PCT.
+                            # using ROI_SIDE_TOLERANCE_PCT.
                             side_tol = int(w_orig * ROI_SIDE_TOLERANCE_PCT / 100)
+                            vert_tol = int(h_orig * ROI_SIDE_TOLERANCE_PCT / 100)
                             
                             if (bx1 < rx - side_tol or
                                 bx2 > rx + rw + side_tol or
-                                by1 < ry or
-                                by2 > ry + rh):
+                                by1 < ry - vert_tol or
+                                by2 > ry + rh + vert_tol):
                                 roi_warning = True
                                 any_lid_outside_roi = True
                                 break
@@ -1714,10 +1784,11 @@ def yolo_worker_loop():
                     mby2 = int(MOCK_BBOX_PCT[3] * h_orig)
                     
                     side_tol = int(w_orig * ROI_SIDE_TOLERANCE_PCT / 100)
+                    vert_tol = int(h_orig * ROI_SIDE_TOLERANCE_PCT / 100)
                     if (mbx1 < rx - side_tol or
                         mbx2 > rx + rw + side_tol or
-                        mby1 < ry or
-                        mby2 > ry + rh):
+                        mby1 < ry - vert_tol or
+                        mby2 > ry + rh + vert_tol):
                         roi_warning = True
                         any_lid_outside_roi = True
 
@@ -1784,19 +1855,15 @@ def yolo_worker_loop():
                         continue
                         
                     if class_name in ["front", "circle_front", "cricle_front", "polygen_front", "polygon_front"]:
-                        has_front_detected = True
                         xyxy_r = box.xyxy[0].cpu().numpy()
                         bw = (xyxy_r[2] - xyxy_r[0]) / scale
                         bh = (xyxy_r[3] - xyxy_r[1]) / scale
                         panel_box_area = max(panel_box_area or 0, bw * bh)
                     elif class_name in ["back", "circle_back", "cricle_back", "polygen_back", "polygon_back"]:
-                        has_back_detected = True
                         xyxy_r = box.xyxy[0].cpu().numpy()
                         bw = (xyxy_r[2] - xyxy_r[0]) / scale
                         bh = (xyxy_r[3] - xyxy_r[1]) / scale
                         panel_box_area = max(panel_box_area or 0, bw * bh)
-                    elif class_name in ["serial", "serial_area", "holes"]:
-                        has_back_detected = True
                 
                 # Determine plate area from YOLO panel box or physical geometry
                 geom_shape, geom_bbox, geom_area = get_fueldoor_geometry(frame_to_process)
@@ -1822,15 +1889,15 @@ def yolo_worker_loop():
                         segment = results[0].masks.xy[box_idx]
                         if segment is not None and len(segment) > 0:
                             segment_scaled = segment.copy()
-                            segment_scaled[:, 0] = segment_scaled[:, 0] / scale
-                            segment_scaled[:, 1] = segment_scaled[:, 1] / scale
+                            segment_scaled[:, 0] = np.clip((segment_scaled[:, 0] - pad_x) / scale, 0, w_orig)
+                            segment_scaled[:, 1] = np.clip((segment_scaled[:, 1] - pad_y) / scale, 0, h_orig)
                             mask_polygon = segment_scaled.astype(int).tolist()
                     
                     # Map coordinates back to original frame size
-                    x1 = int(xyxy_resized[0] / scale)
-                    y1 = int(xyxy_resized[1] / scale)
-                    x2 = int(xyxy_resized[2] / scale)
-                    y2 = int(xyxy_resized[3] / scale)
+                    x1 = int((xyxy_resized[0] - pad_x) / scale)
+                    y1 = int((xyxy_resized[1] - pad_y) / scale)
+                    x2 = int((xyxy_resized[2] - pad_x) / scale)
+                    y2 = int((xyxy_resized[3] - pad_y) / scale)
                     x1, y1 = max(0, x1), max(0, y1)
                     x2, y2 = min(w_orig, x2), min(h_orig, y2)
                     
@@ -1936,15 +2003,19 @@ def yolo_worker_loop():
                         if has_back_detected or (not has_front_detected and not has_back_detected):
                             frame_holes += 1
                     elif class_name in ["front", "circle_front", "cricle_front", "polygen_front", "polygon_front"]:
+                        has_front_detected = True
                         if conf > front_conf:
                             front_box = (x1, y1, x2, y2)
                             front_class = class_name  # Track whether it's 'front', 'circle_front', etc.
                             front_conf = conf
                     elif class_name in ["back", "circle_back", "cricle_back", "polygen_back", "polygon_back"]:
+                        has_back_detected = True
                         if conf > back_conf:
                             back_box = (x1, y1, x2, y2)
                             back_class = class_name  # Track the actual detected back class
                             back_conf = conf
+                    elif class_name in ["serial", "serial_area"]:
+                        has_back_detected = True
                         
                     # Feature: Treat serial or holes as back panel if back panel box is missing
                     if class_name in ["serial", "serial_area", "holes"] and back_class is None:
@@ -2086,6 +2157,7 @@ def yolo_worker_loop():
                             print(f"sending crop to OCR server\n")
 
                             next_crop_num = len(active_cycle_data["serial_votes"]) + 1
+                            active_cycle_data["latest_back_frame"] = frame_to_process.copy()
                             threading.Thread(
                                 target=process_ocr_async,
                                 args=(crop, active_cycle_data["temp_folder"], next_crop_num, active_cycle_data),
@@ -2198,20 +2270,36 @@ def yolo_worker_loop():
                                 current_cycle["part_type"] = "AUTO"
                                 current_cycle["step1_status"] = "Pending"
                 elif state == "WAITING_BACK":
-                    current_cycle["status"] = "Waiting for Back Panel"
-                    current_cycle["instruction"] = "FLIP TO BACK SIDE"
-                    current_cycle["instruction_color"] = "blue"
+                    ocr_done = active_cycle_data.get("serial_number") is not None
                     
-                    is_back_visible = (back_box is not None) or has_serial_detected or has_holes_detected
+                    if active_cycle_data.get("back_path") is not None:
+                        current_cycle["step3_status"] = "OK"
+                        if ocr_done:
+                            active_cycle_data["state"] = "WAITING_REMOVE"
+                            check_and_finalize_cycle(active_cycle_data)
+                        else:
+                            current_cycle["status"] = "Detecting Serial Number..."
+                            current_cycle["instruction"] = "DETECTING SERIAL NUMBER..."
+                            current_cycle["instruction_color"] = "blue"
+                    else:
+                        current_cycle["status"] = "Waiting for Back Panel"
+                        current_cycle["instruction"] = "FLIP TO BACK SIDE"
+                        current_cycle["instruction_color"] = "blue"
                     
-                    if is_back_visible and not has_front_detected:
-                        if roi_warning:
+                    is_back_visible = (back_box is not None) or has_back_detected or has_serial_detected or has_holes_detected or ocr_done
+                    is_front_misplaced = front_box is not None and not has_back_detected and not has_serial_detected and not ocr_done
+                    
+                    if (is_back_visible or ocr_done) and not is_front_misplaced:
+                        if roi_warning and not ocr_done:
                             active_cycle_data["back_frames_count"] = 0
                             active_cycle_data["back_first_seen_time"] = None
                             current_cycle["status"] = "Door Out of Bounds!"
                             current_cycle["instruction"] = "PLACE PROPERLY INSIDE FRAME"
                             current_cycle["instruction_color"] = "orange"
                         else:
+                            active_cycle_data["latest_back_frame"] = frame_to_process.copy()
+                            active_cycle_data["empty_tray_back_count"] = 0
+                            
                             # Dynamically adjust to what part they are showing (no strict blocking)
                             if back_class in ["circle_back", "cricle_back"]:
                                 active_cycle_data["locked_model_key"] = "CIRCLE"
@@ -2228,61 +2316,56 @@ def yolo_worker_loop():
                                 current_cycle["locked_part_type"] = "RECTANGLE"
                                 current_cycle["part_type"] = "RECTANGLE"
 
-                            # Proceed normally with stabilization and capture
-                            # Determine a center for movement tracking
-                            if back_box:
-                                cx = (back_box[0] + back_box[2]) / 2
-                                cy = (back_box[1] + back_box[3]) / 2
-                            elif len(sub_feature_boxes) > 0:
-                                cx = sum([b[0] + b[2] for b in sub_feature_boxes]) / (2 * len(sub_feature_boxes))
-                                cy = sum([b[1] + b[3] for b in sub_feature_boxes]) / (2 * len(sub_feature_boxes))
-                            else:
-                                cx, cy = w_orig / 2, h_orig / 2
-                            
-                            prev_cx, prev_cy = active_cycle_data.get("back_box_center") or (cx, cy)
-                            dist = ((cx - prev_cx)**2 + (cy - prev_cy)**2)**0.5
-                        
-                            if dist > 50:
-                                active_cycle_data["back_frames_count"] = 0
-                                active_cycle_data["back_first_seen_time"] = None
-                            
-                            active_cycle_data["back_box_center"] = (cx, cy)
+                            # Count frames with back panel visible (capture after 2 frames, with or without flickering)
+                            active_cycle_data["back_confirmed_frames"] += 1
                             active_cycle_data["back_frames_count"] += 1
                         
                             if active_cycle_data.get("back_first_seen_time") is None:
                                 active_cycle_data["back_first_seen_time"] = time.time()
                             
-                            time_stable = time.time() - active_cycle_data["back_first_seen_time"]
-                        
                             ocr_done = active_cycle_data.get("serial_number") is not None
                             ocr_start = active_cycle_data.get("ocr_start_time")
                             ocr_timeout = (ocr_start is not None) and (time.time() - ocr_start > OCR_FALLBACK_TIMEOUT)
-                        
-                            if time_stable >= 0.0 or ocr_done:
-                                # Delay the transition to finalization until the OCR thread has actually successfully completed or timed out
-                                if ocr_done or ocr_timeout:
-                                    # Save full annotated image without cropping
+                            back_confirmed = active_cycle_data["back_confirmed_frames"] >= 2
+                            
+                            # Capture back once we have either:
+                            # (a) 2 frames with back visible (with or without flickering), OR
+                            # (b) OCR serial confirmed/timed-out
+                            if back_confirmed or ocr_done or ocr_timeout:
+                                if active_cycle_data.get("back_path") is None and active_cycle_data.get("temp_folder"):
+                                    # Save best available back frame (prefer current, fallback to stored latest)
                                     full_raw = frame_to_process.copy()
+                                    dist_res = distance_measurement_res if (distance_measurement_res and distance_measurement_res.get("is_valid")) else active_cycle_data.get("distance_measurement")
+                                    if dist_res and dist_res.get("is_valid") and SU21_GAUGE is not None:
+                                        SU21_GAUGE.draw_overlay(full_raw, dist_res, scale=1.0)
+                                        active_cycle_data["distance_overlay_drawn"] = True
                                     back_file = os.path.join(active_cycle_data["temp_folder"], "back.jpg")
                                     cv2.imwrite(back_file, full_raw, [cv2.IMWRITE_JPEG_QUALITY, 95])
                                     active_cycle_data["back_path"] = back_file
+                                    logger.info(f"[State] Back captured (confirmed_frames={active_cycle_data['back_confirmed_frames']}, ocr_done={ocr_done})")
                                 
-                                    current_cycle["step3_status"] = "OK"
-                                    for d in frame_defects:
-                                        if d != "out_of_bounds":
-                                            active_cycle_data["defects_detected"].add(d)
+                                # Step 3 = OK immediately the moment back is seen for 2 frames
+                                current_cycle["step3_status"] = "OK"
                                 
-                                    # Go straight to finalization
+                                for d in frame_defects:
+                                    if d != "out_of_bounds":
+                                        active_cycle_data["defects_detected"].add(d)
+                                
+                                if ocr_done or ocr_timeout:
+                                    # OCR finished or timed out — finalize now
                                     active_cycle_data["state"] = "WAITING_REMOVE"
                                     check_and_finalize_cycle(active_cycle_data)
                                 else:
+                                    # Back saved, step3=OK, but OCR still running — stay in WAITING_BACK
+                                    current_cycle["status"] = "Detecting Serial Number..."
                                     current_cycle["instruction"] = "DETECTING SERIAL NUMBER..."
-                                    active_cycle_data["back_frames_count"] = 1 # Keep it below threshold until serial is seen
+                                    current_cycle["instruction_color"] = "blue"
                     else:
-                        active_cycle_data["back_frames_count"] = 0
+                        # With or without flickering: do not wipe back_confirmed_frames on transient flickers
                         active_cycle_data["back_first_seen_time"] = None
-                        if has_front_detected:
+                        if is_front_misplaced:
                             # Operator placed a front panel instead of flipping to back
+                            active_cycle_data["back_confirmed_frames"] = 0
                             current_cycle["status"] = "Front Panel Detected!"
                             current_cycle["instruction"] = "PLEASE FLIP DOOR TO BACK SIDE"
                             current_cycle["instruction_color"] = "orange"
@@ -2290,6 +2373,9 @@ def yolo_worker_loop():
                         else:
                             # Tray is empty while waiting for back
                             active_cycle_data["empty_tray_back_count"] = active_cycle_data.get("empty_tray_back_count", 0) + 1
+                            # Only if tray is empty for > 15 frames do we consider it a true absence
+                            if active_cycle_data["empty_tray_back_count"] > 15 and active_cycle_data.get("back_path") is None:
+                                active_cycle_data["back_confirmed_frames"] = 0
                             # If tray is empty for > 3 seconds (90 frames), operator abandoned part: reset back to AUTO
                             if active_cycle_data["empty_tray_back_count"] > 90:
                                 logger.info("[Abort] Tray empty in WAITING_BACK for >3s. Aborting abandoned cycle and resetting to AUTO.")
@@ -2297,6 +2383,14 @@ def yolo_worker_loop():
 
                         
                 elif state == "WAITING_REMOVE":
+                    current_cycle["step3_status"] = "OK"
+                    if active_cycle_data.get("defects_detected") or current_cycle.get("result") in ["NG", "FAIL"]:
+                        current_cycle["instruction"] = "NG - REMOVE THE PLATE"
+                        current_cycle["instruction_color"] = "red"
+                    else:
+                        current_cycle["instruction"] = "OK - REMOVE THE PLATE"
+                        current_cycle["instruction_color"] = "green"
+
                     # Check for ANY detection (panel or sub-features from circular shapes)
                     any_lid_visible = has_front_detected or has_back_detected or len(sub_feature_boxes) > 0
                     if not any_lid_visible:
@@ -2306,12 +2400,12 @@ def yolo_worker_loop():
                         if active_cycle_data["remove_frames_count"] == 1:
                             current_cycle["serial"] = "------"
                             current_cycle["confidence"] = "- -"
-                            current_cycle["status"] = "Door removed. Saving report..."
+                            current_cycle["status"] = "Plate removed. Saving report..."
                             current_cycle["instruction"] = "REMOVE COMPLETE - SAVING..."
                             current_cycle["instruction_color"] = "orange"
                         if active_cycle_data["remove_frames_count"] >= 3:
                             needs_reset = True
-                    elif has_front_detected and not has_back_detected:
+                    elif front_box is not None and not has_back_detected and not has_serial_detected:
                         # A NEW front panel appeared — the operator has placed the next part.
                         # Reset immediately so the new cycle starts cleanly without the old serial.
                         logger.info("[State] New FRONT detected in WAITING_REMOVE — auto-resetting for next cycle.")

@@ -1604,6 +1604,7 @@
         // Tracks which defects have already been announced in the current cycle
         // so we only speak once per new defect, not on every 500 ms poll.
         let _announcedDefects = new Set();
+        let _announcedCycleComplete = false;
         let _audioMuted = false;
 
         function toggleAudio() {
@@ -1968,15 +1969,24 @@
 
                 const isCycleFinalized = data.capture_state === 'WAITING_REMOVE' 
                     || (data.status && data.status.startsWith('Finished Cycle'))
-                    || (data.instruction && data.instruction.includes('REMOVE THE DOOR'));
+                    || (data.instruction && (data.instruction.includes('REMOVE THE DOOR') || data.instruction.includes('REMOVE THE PLATE')));
 
                 // Side Signal Bars should ONLY signal OK/NG when the cycle has actually evaluated and completed
                 if (isCycleFinalized) {
-                    if (data.result === 'NG' || data.result === 'FAIL' || data.instruction === 'NG - REMOVE THE DOOR') {
+                    if (data.result === 'NG' || data.result === 'FAIL' || (data.instruction && (data.instruction.includes('NG - REMOVE') || data.instruction === 'NG'))) {
                         isNG = true;
-                    } else if (data.result === 'OK' || data.result === 'PASS' || data.instruction === 'OK - REMOVE THE DOOR') {
+                    } else if (data.result === 'OK' || data.result === 'PASS' || (data.instruction && (data.instruction.includes('OK - REMOVE') || data.instruction === 'OK'))) {
                         isOK = true;
                     }
+
+                    // Speak operator instruction when cycle completes
+                    if (!_announcedCycleComplete) {
+                        _announcedCycleComplete = true;
+                        const completeVoice = isNG ? 'Inspection NG. Remove the plate.' : 'Inspection OK. Remove the plate.';
+                        speakDefect(completeVoice);
+                    }
+                } else if (isCycleInProgress) {
+                    _announcedCycleComplete = false;
                 } else if (!isCycleInProgress) {
                     if (actualDefects.length > 0 && (data.result === 'NG' || data.result === 'FAIL')) {
                         isNG = true;

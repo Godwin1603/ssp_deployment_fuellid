@@ -8,11 +8,11 @@ ai:
     cricle_front: 0.40     # typo alias
     front: 0.40
     polygen_back: 0.40
-    polygen_front: 0.40
+    polygen_front: 0.80
     polygon_back: 0.40
     polygon_front: 0.40
     # --- Hole / structural ---
-    holes: 0.80
+    holes: 0.40
     hole_missing: 0.50
     hole_spec_error: 0.90
     # --- Defect classes ---
@@ -28,7 +28,7 @@ ai:
     # --- OCR classes ---
     serial: 0.10
     serial_area: 0.10
-  default_yolo_confidence: 0.10
+  default_yolo_confidence: 0.06
   imgsz: 1024
   min_defect_area: 250
   max_defect_plate_ratio: 0.50
@@ -43,7 +43,7 @@ ai:
     blue_thresh: 0.75
     laplacian_variance_min: 150.0
     metal_min_ratio: 0.15
-  roi_side_tolerance_pct: 0.6
+  roi_side_tolerance_pct: 1.3
 camera:
   gige:
     exposure: 60000.0
