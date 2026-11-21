@@ -7,3 +7,4 @@ nssm.exe
 *.pt
 *.zip
 roi_preview.jpg
+*_backup*

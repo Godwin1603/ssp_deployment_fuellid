@@ -37,8 +37,8 @@ class SU21DistanceGauge:
         self.tolerance_mm = float(self.cfg.get("tolerance_mm", 1.0))
         self.mm_per_px = float(self.cfg.get("mm_per_px", 0.12145729))
         self.axis = self.cfg.get("axis", "x")
-        self.min_match_score = 0.80
-        self.search_margin_px = 80
+        self.min_match_score = 0.60
+        self.search_margin_px = 100
 
         # Load reference image and precompute ORB features
         ref_path = os.path.join(cfg_dir, "reference.png")
@@ -138,8 +138,8 @@ class SU21DistanceGauge:
             }
 
         good = [m for m, n in (p for p in self.matcher.knnMatch(self.ref_des, des, k=2) if len(p) == 2)
-                if m.distance < 0.75 * n.distance]
-        if len(good) < 20:
+                if m.distance < 0.78 * n.distance]
+        if len(good) < 4:
             return {
                 "status": "PART NOT FOUND",
                 "mm": None, "dev": None,
@@ -152,8 +152,20 @@ class SU21DistanceGauge:
 
         src = np.float32([kp[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
         dst = np.float32([self.ref_kp[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-        H, inl = cv2.findHomography(src, dst, cv2.RANSAC, 4.0)
-        if H is None or inl.sum() < 15:
+
+        H = None
+        # 1. Try rigid affine transform first (rotation + translation + uniform scale)
+        # Highly robust for flat metal parts on a tray
+        M, inl_aff = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=5.0)
+        if M is not None and inl_aff.sum() >= 8:
+            H = np.vstack([M, [0, 0, 1]])
+        else:
+            # 2. Fallback to full perspective homography
+            H_cand, inl_h = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
+            if H_cand is not None and inl_h.sum() >= 8:
+                H = H_cand
+
+        if H is None:
             return {
                 "status": "ALIGNMENT FAILED",
                 "mm": None, "dev": None,
