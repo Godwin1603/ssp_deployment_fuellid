@@ -322,7 +322,8 @@ def create_inspection_report(
         [Paragraph("<b>Confidence:</b>", cell_style), Paragraph(conf_str, cell_style)],
         [Paragraph("<b>Inspection Timestamp:</b>", cell_style), Paragraph(f"{date_str} {time_str}", cell_style)]
     ]
-    if distance_data and distance_data.get("mm") is not None:
+    is_rect_report = bool(model_name and ("RECTANGLE" in model_name.upper() or "SU21" in model_name.upper()))
+    if is_rect_report and distance_data and distance_data.get("mm") is not None:
         d_val = float(distance_data["mm"])
         d_nom = float(distance_data.get("nominal_mm", 140.769))
         d_tol = float(distance_data.get("tolerance_mm", 1.0))
@@ -352,17 +353,21 @@ def create_inspection_report(
     story.append(result_layout)
     
     if defects:
-        defect_str = ", ".join(defects).replace('_', ' ')
-        defect_text = f"<font color='#ef4444'><b>Defects detected : {defect_str}</b></font>"
-        story.append(Spacer(1, 10))
-        story.append(Paragraph(defect_text, ParagraphStyle(
-            'DefectText',
-            parent=styles['Normal'],
-            fontName='Helvetica',
-            fontSize=12,
-            leading=16,
-            alignment=1 # Center
-        )))
+        if not is_rect_report:
+            # Strictly exclude distance defects for Circle and Polygon parts
+            defects = [d for d in defects if d not in ("distance_out_of_spec", "distance_ng") and "distance" not in d.lower()]
+        if defects:
+            defect_str = ", ".join(defects).replace('_', ' ')
+            defect_text = f"<font color='#ef4444'><b>Defects detected : {defect_str}</b></font>"
+            story.append(Spacer(1, 10))
+            story.append(Paragraph(defect_text, ParagraphStyle(
+                'DefectText',
+                parent=styles['Normal'],
+                fontName='Helvetica',
+                fontSize=12,
+                leading=16,
+                alignment=1 # Center
+            )))
     
     # Build document
     doc.build(story, onFirstPage=add_footer)

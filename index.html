@@ -1824,9 +1824,12 @@
                 const hasLegBend = data.defects && data.defects.includes('leg_bend');
                 const hasHoleSpecError = data.defects && data.defects.includes('hole_spec_error');
                 const hasOutOfBounds = data.defects && data.defects.includes('out_of_bounds');
-                const hasDistanceNG = data.defects && (data.defects.includes('distance_out_of_spec') || data.defects.includes('distance_ng'));
-                const isRectanglePart = (data.part_type === 'RECTANGLE' || data.locked_part_type === 'RECTANGLE');
-                const distData = data.gauge_distance;
+                const isNonRectangle = (data.part_type === 'CIRCLE' || data.locked_part_type === 'CIRCLE' ||
+                                        data.part_type === 'POLYGEN' || data.locked_part_type === 'POLYGEN' ||
+                                        data.part_type === 'POLYGON' || data.locked_part_type === 'POLYGON');
+                const isRectanglePart = !isNonRectangle && (data.part_type === 'RECTANGLE' || data.locked_part_type === 'RECTANGLE');
+                const hasDistanceNG = isRectanglePart && data.defects && (data.defects.includes('distance_out_of_spec') || data.defects.includes('distance_ng'));
+                const distData = isRectanglePart ? data.gauge_distance : null;
 
                 if (isRectanglePart && distData && distData.is_valid) {
                     if (distSection) distSection.style.display = 'block';
@@ -1891,7 +1894,7 @@
                 if (hasScrapMark) warningMessages.push("SCRAP MARK DETECTED");
                 if (hasLegBend) warningMessages.push("LEG BEND DETECTED");
                 if (hasHoleSpecError) warningMessages.push("HOLE SPEC ERROR");
-                if (hasDistanceNG) warningMessages.push("DISTANCE OUT OF SPEC");
+                if (isRectanglePart && hasDistanceNG) warningMessages.push("DISTANCE OUT OF SPEC");
                 if (holesMissing) {
                     warningMessages.push("HOLES MISSING");
                 }

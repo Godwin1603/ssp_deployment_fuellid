@@ -680,6 +680,15 @@ def finalize_report_and_rename(c_data):
                 active_cycle_data["defects_detected"].add("holes_missing")
             if active_cycle_data["serial_number"] == "serial_missing":
                 active_cycle_data["defects_detected"].add("serial_missing")
+
+            # Distance measurement and distance defects are strictly for RECTANGLE models only
+            part_key = str(c_data.get("locked_model_key") or active_cycle_data.get("locked_model_key") or current_cycle.get("part_type") or "").upper()
+            is_rectangle_cycle = (part_key == "RECTANGLE")
+            if not is_rectangle_cycle:
+                active_cycle_data["defects_detected"].discard("distance_out_of_spec")
+                active_cycle_data["defects_detected"].discard("distance_ng")
+                c_data["distance_measurement"] = None
+
             defects = list(active_cycle_data["defects_detected"])
             current_cycle["defects"] = defects
         status = "FAIL" if defects else "PASS"
@@ -728,8 +737,8 @@ def finalize_report_and_rename(c_data):
         # Path of the report within the temp folder matching the folder_name
         temp_report_path = os.path.join(temp_dir, f"{folder_name}.pdf")
 
-        # Ensure back image has distance overlay if distance measurement was recorded and not yet drawn
-        if c_data.get("distance_measurement") and c_data["distance_measurement"].get("is_valid") and not c_data.get("distance_overlay_drawn") and SU21_GAUGE is not None:
+        # Ensure back image has distance overlay if distance measurement was recorded and not yet drawn (Rectangle only)
+        if is_rectangle_cycle and c_data.get("distance_measurement") and c_data["distance_measurement"].get("is_valid") and not c_data.get("distance_overlay_drawn") and SU21_GAUGE is not None:
             if back and os.path.exists(back):
                 try:
                     back_img = cv2.imread(back)
@@ -743,7 +752,7 @@ def finalize_report_and_rename(c_data):
         # Create report PDF in a separate process to avoid GIL lag
         import subprocess, json, sys
         dist_meta = None
-        if c_data.get("distance_measurement"):
+        if is_rectangle_cycle and c_data.get("distance_measurement"):
             dm = c_data["distance_measurement"]
             dist_meta = {
                 "mm": float(dm["mm"]) if dm.get("mm") is not None else None,
@@ -1539,7 +1548,8 @@ def video_processing_loop():
 
             # --- Draw Distance Gauge Overlay on Live UI Feed (Rectangle Back only) ---
             with lock:
-                dist_overlay = current_distance_overlay
+                curr_model = str(current_cycle.get("part_type") or current_cycle.get("locked_part_type") or active_cycle_data.get("locked_model_key") or "").upper()
+                dist_overlay = current_distance_overlay if curr_model == "RECTANGLE" else None
             if dist_overlay and dist_overlay.get("is_valid") and SU21_GAUGE is not None:
                 SU21_GAUGE.draw_overlay(annotated_frame, dist_overlay, scale=scale_ann)
 
@@ -2051,12 +2061,22 @@ def yolo_worker_loop():
                     logger.error(f"[SU21 Gauge] Error during measurement: {g_err}")
 
             with lock:
-                current_distance_overlay = distance_measurement_res
-                current_cycle["gauge_distance"] = distance_measurement_res
-                if distance_measurement_res and distance_measurement_res.get("is_valid"):
-                    active_cycle_data["distance_measurement"] = distance_measurement_res
-                    if distance_measurement_res["status"] == "NG":
-                        active_cycle_data["defects_detected"].add("distance_out_of_spec")
+                if not is_rectangle_model:
+                    # Explicit safeguard: Never allow distance overlay, gauge data, or defect on Circle/Polygen
+                    current_distance_overlay = None
+                    current_cycle["gauge_distance"] = None
+                    active_cycle_data["distance_measurement"] = None
+                    active_cycle_data["defects_detected"].discard("distance_out_of_spec")
+                    active_cycle_data["defects_detected"].discard("distance_ng")
+                    if "distance_out_of_spec" in frame_defects or "distance_ng" in frame_defects:
+                        frame_defects = [d for d in frame_defects if d not in ("distance_out_of_spec", "distance_ng")]
+                else:
+                    current_distance_overlay = distance_measurement_res
+                    current_cycle["gauge_distance"] = distance_measurement_res
+                    if distance_measurement_res and distance_measurement_res.get("is_valid"):
+                        active_cycle_data["distance_measurement"] = distance_measurement_res
+                        if distance_measurement_res["status"] == "NG":
+                            active_cycle_data["defects_detected"].add("distance_out_of_spec")
                         
             # --- Defect Frame Save ---
             # When defects are detected on the front panel, save the annotated frame once per cycle.
@@ -2336,7 +2356,7 @@ def yolo_worker_loop():
                                     # Save best available back frame (prefer current, fallback to stored latest)
                                     full_raw = frame_to_process.copy()
                                     dist_res = distance_measurement_res if (distance_measurement_res and distance_measurement_res.get("is_valid")) else active_cycle_data.get("distance_measurement")
-                                    if dist_res and dist_res.get("is_valid") and SU21_GAUGE is not None:
+                                    if is_rectangle_model and dist_res and dist_res.get("is_valid") and SU21_GAUGE is not None:
                                         SU21_GAUGE.draw_overlay(full_raw, dist_res, scale=1.0)
                                         active_cycle_data["distance_overlay_drawn"] = True
                                     back_file = os.path.join(active_cycle_data["temp_folder"], "back.jpg")
@@ -2349,6 +2369,8 @@ def yolo_worker_loop():
                                 
                                 for d in frame_defects:
                                     if d != "out_of_bounds":
+                                        if not is_rectangle_model and d in ("distance_out_of_spec", "distance_ng"):
+                                            continue
                                         active_cycle_data["defects_detected"].add(d)
                                 
                                 if ocr_done or ocr_timeout:
