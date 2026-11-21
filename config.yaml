@@ -1,7 +1,7 @@
 ai:
   class_confidences:
     # --- Panel classes ---
-    back: 0.40
+    back: 0.25
     circle_back: 0.40
     cricle_back: 0.40      # model class ID typo in model
     circle_front: 0.40

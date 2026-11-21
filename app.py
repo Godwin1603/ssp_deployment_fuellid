@@ -688,6 +688,14 @@ def finalize_report_and_rename(c_data):
                 active_cycle_data["defects_detected"].discard("distance_out_of_spec")
                 active_cycle_data["defects_detected"].discard("distance_ng")
                 c_data["distance_measurement"] = None
+            else:
+                dm = c_data.get("distance_measurement") or active_cycle_data.get("distance_measurement")
+                if dm and dm.get("is_valid"):
+                    if dm.get("status") == "NG":
+                        active_cycle_data["defects_detected"].add("distance_out_of_spec")
+                    else:
+                        active_cycle_data["defects_detected"].discard("distance_out_of_spec")
+                        active_cycle_data["defects_detected"].discard("distance_ng")
 
             defects = list(active_cycle_data["defects_detected"])
             current_cycle["defects"] = defects
@@ -2039,15 +2047,16 @@ def yolo_worker_loop():
                         # Do not set back_box to avoid false mismatch triggers on circle vs standard,
                         # but we still mark back_class to indicate the back was conceptually captured.
 
-            # --- SU21 Distance Measurement Gauge (Only for RECTANGLE when back class is detected) ---
+            # --- SU21 Distance Measurement Gauge (Only for RECTANGLE) ---
             # Requirement:
-            # "this distance need to work when back class is detected...
-            #  if no back class ..then no distance feature ..integrate it ....this is only for rectange part..not for circle or polygen"
-            is_rectangle_model = (active_model_key == "RECTANGLE")
-            is_rectangle_back = is_rectangle_model and (back_class == "back" or any(d["class_name"] == "back" for d in new_detections))
+            # Only for rectangle part, not for circle or polygen.
+            # In WAITING_BACK or when back features are present on rectangle:
+            is_rectangle_model = (active_model_key == "RECTANGLE") or (active_cycle_data.get("locked_model_key") == "RECTANGLE") or (active_cycle_data.get("front_type") == "standard")
+            is_back_stage = (state == "WAITING_BACK")
+            is_back_feature_seen = (back_class == "back") or any(d["class_name"] in ["back", "serial", "serial_area", "holes"] for d in new_detections)
 
             distance_measurement_res = None
-            if is_rectangle_back and SU21_GAUGE is not None:
+            if is_rectangle_model and (is_back_stage or is_back_feature_seen) and SU21_GAUGE is not None:
                 try:
                     distance_measurement_res = SU21_GAUGE.measure(frame_to_process)
                     if distance_measurement_res.get("is_valid"):
@@ -2071,12 +2080,22 @@ def yolo_worker_loop():
                     if "distance_out_of_spec" in frame_defects or "distance_ng" in frame_defects:
                         frame_defects = [d for d in frame_defects if d not in ("distance_out_of_spec", "distance_ng")]
                 else:
-                    current_distance_overlay = distance_measurement_res
-                    current_cycle["gauge_distance"] = distance_measurement_res
                     if distance_measurement_res and distance_measurement_res.get("is_valid"):
+                        current_distance_overlay = distance_measurement_res
+                        current_cycle["gauge_distance"] = distance_measurement_res
                         active_cycle_data["distance_measurement"] = distance_measurement_res
                         if distance_measurement_res["status"] == "NG":
                             active_cycle_data["defects_detected"].add("distance_out_of_spec")
+                        else:
+                            active_cycle_data["defects_detected"].discard("distance_out_of_spec")
+                            active_cycle_data["defects_detected"].discard("distance_ng")
+                    elif active_cycle_data.get("distance_measurement") and active_cycle_data["distance_measurement"].get("is_valid"):
+                        # Dynamic recovery retention: hold valid measurement across transient blurs/flickers
+                        current_distance_overlay = active_cycle_data["distance_measurement"]
+                        current_cycle["gauge_distance"] = active_cycle_data["distance_measurement"]
+                    else:
+                        current_distance_overlay = distance_measurement_res
+                        current_cycle["gauge_distance"] = distance_measurement_res
                         
             # --- Defect Frame Save ---
             # When defects are detected on the front panel, save the annotated frame once per cycle.
@@ -2306,11 +2325,25 @@ def yolo_worker_loop():
                         current_cycle["instruction"] = "FLIP TO BACK SIDE"
                         current_cycle["instruction_color"] = "blue"
                     
-                    is_back_visible = (back_box is not None) or has_back_detected or has_serial_detected or has_holes_detected or ocr_done
-                    is_front_misplaced = front_box is not None and not has_back_detected and not has_serial_detected and not ocr_done
+                    # DYNAMIC RECOVERY FOR RECTANGLE DISTANCE MEASUREMENT:
+                    # If SU21 gauge obtained a valid distance measurement (or already held one in cycle),
+                    # that is definitive physical proof that the rectangle back panel is sitting on the tray!
+                    dist_valid = bool(is_rectangle_model and (
+                        (distance_measurement_res and distance_measurement_res.get("is_valid")) or 
+                        (active_cycle_data.get("distance_measurement") and active_cycle_data["distance_measurement"].get("is_valid"))
+                    ))
+
+                    if dist_valid:
+                        has_back_detected = True
+                        back_class = "back"
+                        front_box = None
+                        has_front_detected = False
+
+                    is_back_visible = (back_box is not None) or has_back_detected or has_serial_detected or has_holes_detected or ocr_done or dist_valid
+                    is_front_misplaced = front_box is not None and not has_back_detected and not has_serial_detected and not ocr_done and not dist_valid
                     
                     if (is_back_visible or ocr_done) and not is_front_misplaced:
-                        if roi_warning and not ocr_done:
+                        if roi_warning and not ocr_done and not dist_valid:
                             active_cycle_data["back_frames_count"] = 0
                             active_cycle_data["back_first_seen_time"] = None
                             current_cycle["status"] = "Door Out of Bounds!"
@@ -2331,12 +2364,12 @@ def yolo_worker_loop():
                                 active_cycle_data["front_type"] = "polygen"
                                 current_cycle["locked_part_type"] = "POLYGON"
                                 current_cycle["part_type"] = "POLYGON"
-                            elif back_class == "back":
+                            elif back_class == "back" or dist_valid:
                                 active_cycle_data["locked_model_key"] = "RECTANGLE"
                                 current_cycle["locked_part_type"] = "RECTANGLE"
                                 current_cycle["part_type"] = "RECTANGLE"
 
-                            # Count frames with back panel visible (capture after 2 frames, with or without flickering)
+                            # Count frames with back panel visible (capture after 2 frames, or immediately on dist_valid)
                             active_cycle_data["back_confirmed_frames"] += 1
                             active_cycle_data["back_frames_count"] += 1
                         
@@ -2345,14 +2378,24 @@ def yolo_worker_loop():
                             
                             ocr_done = active_cycle_data.get("serial_number") is not None
                             ocr_start = active_cycle_data.get("ocr_start_time")
-                            ocr_timeout = (ocr_start is not None) and (time.time() - ocr_start > OCR_FALLBACK_TIMEOUT)
-                            back_confirmed = active_cycle_data["back_confirmed_frames"] >= 2
+                            back_seen_time = active_cycle_data.get("back_first_seen_time")
+                            # Comprehensive timeout: either OCR timer elapsed or back visible for > 3.5s
+                            ocr_timeout = ((ocr_start is not None) and (time.time() - ocr_start > OCR_FALLBACK_TIMEOUT)) or \
+                                          ((back_seen_time is not None) and (time.time() - back_seen_time > (OCR_FALLBACK_TIMEOUT + 0.5)))
+                            back_confirmed = (active_cycle_data["back_confirmed_frames"] >= 2) or dist_valid
                             
                             # Capture back once we have either:
-                            # (a) 2 frames with back visible (with or without flickering), OR
+                            # (a) 2 frames with back visible (or dist_valid dynamic recovery), OR
                             # (b) OCR serial confirmed/timed-out
                             if back_confirmed or ocr_done or ocr_timeout:
-                                if active_cycle_data.get("back_path") is None and active_cycle_data.get("temp_folder"):
+                                if active_cycle_data.get("back_path") is None:
+                                    if not active_cycle_data.get("temp_folder"):
+                                        today_str = datetime.now().strftime("%Y-%m-%d")
+                                        timestamp = datetime.now().strftime("%H%M%S")
+                                        temp_path = os.path.join("fuel_door_data", today_str, f"temp_capture_{timestamp}")
+                                        os.makedirs(temp_path, exist_ok=True)
+                                        active_cycle_data["temp_folder"] = temp_path
+
                                     # Save best available back frame (prefer current, fallback to stored latest)
                                     full_raw = frame_to_process.copy()
                                     dist_res = distance_measurement_res if (distance_measurement_res and distance_measurement_res.get("is_valid")) else active_cycle_data.get("distance_measurement")
@@ -2362,9 +2405,9 @@ def yolo_worker_loop():
                                     back_file = os.path.join(active_cycle_data["temp_folder"], "back.jpg")
                                     cv2.imwrite(back_file, full_raw, [cv2.IMWRITE_JPEG_QUALITY, 95])
                                     active_cycle_data["back_path"] = back_file
-                                    logger.info(f"[State] Back captured (confirmed_frames={active_cycle_data['back_confirmed_frames']}, ocr_done={ocr_done})")
+                                    logger.info(f"[State] Back captured (confirmed_frames={active_cycle_data['back_confirmed_frames']}, dist_valid={dist_valid}, ocr_done={ocr_done})")
                                 
-                                # Step 3 = OK immediately the moment back is seen for 2 frames
+                                # Step 3 = OK immediately the moment back is seen / distance recovered
                                 current_cycle["step3_status"] = "OK"
                                 
                                 for d in frame_defects:

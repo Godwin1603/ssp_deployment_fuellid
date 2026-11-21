@@ -87,10 +87,10 @@ class SU21DistanceGauge:
             dy = 0.5 * (t - b) / d if d != 0 else 0.0
         return x + dx, y + dy
 
-    def locate(self, gray, key):
-        """Locates template within taught ROI + search margin."""
+    def locate(self, gray, key, margin=None):
+        """Locates template within taught ROI + search margin with subpixel refinement and dynamic recovery."""
         x, y, w, h = self.cfg[f"roi_{key}"]
-        m = self.search_margin_px
+        m = self.search_margin_px if margin is None else margin
         sx, sy = max(x - m, 0), max(y - m, 0)
         ex, ey = min(x + w + m, gray.shape[1]), min(y + h + m, gray.shape[0])
         area = gray[sy:ey, sx:ex]
@@ -99,6 +99,25 @@ class SU21DistanceGauge:
             return None, 0.0
         res = cv2.matchTemplate(area, t, cv2.TM_CCOEFF_NORMED)
         _, score, _, loc = cv2.minMaxLoc(res)
+
+        # Dynamic recovery: if score is borderline (< min_match_score), test slight scale variations
+        if score < self.min_match_score:
+            best_score = score
+            best_loc = loc
+            for sc in (0.97, 0.985, 1.015, 1.03):
+                tw = int(round(t.shape[1] * sc))
+                th = int(round(t.shape[0] * sc))
+                if area.shape[1] >= tw and area.shape[0] >= th:
+                    t_scaled = cv2.resize(t, (tw, th), interpolation=cv2.INTER_LINEAR)
+                    r_sc = cv2.matchTemplate(area, t_scaled, cv2.TM_CCOEFF_NORMED)
+                    _, s_sc, _, l_sc = cv2.minMaxLoc(r_sc)
+                    if s_sc > best_score:
+                        best_score = s_sc
+                        best_loc = l_sc
+                        res = r_sc
+            score = best_score
+            loc = best_loc
+
         px, py = self.subpixel(res, loc)
         ox, oy = self.cfg[f"offset_{key}"]
         return (sx + px + ox, sy + py + oy), float(score)
@@ -106,6 +125,10 @@ class SU21DistanceGauge:
     def measure(self, frame):
         """
         Runs full alignment, feature location, and distance calculation on a camera frame.
+        Includes multi-level dynamic recovery:
+        1. Rigid Affine alignment (RANSAC threshold 6.0, min inliers >= 4)
+        2. Homography fallback (RANSAC threshold 6.0, min inliers >= 4)
+        3. Direct Fixture Dynamic Recovery (locates catch plug & trimline directly in tray fixture)
         Returns:
             dict containing status ('OK', 'NG', 'PART NOT FOUND', etc.),
             mm, dev, pt_a, pt_b (in frame's original pixel space),
@@ -126,110 +149,125 @@ class SU21DistanceGauge:
 
         gray = self.preprocess(scaled_frame)
         kp, des = self.orb.detectAndCompute(gray, None)
-        if des is None or len(kp) < 20:
-            return {
-                "status": "PART NOT FOUND",
-                "mm": None, "dev": None,
-                "nominal_mm": self.nominal_mm,
-                "tolerance_mm": self.tolerance_mm,
-                "score_A": 0.0, "score_B": 0.0,
-                "pt_a": None, "pt_b": None,
-                "is_valid": False
-            }
-
-        good = [m for m, n in (p for p in self.matcher.knnMatch(self.ref_des, des, k=2) if len(p) == 2)
-                if m.distance < 0.80 * n.distance]
-        if len(good) < 4:
-            return {
-                "status": "PART NOT FOUND",
-                "mm": None, "dev": None,
-                "nominal_mm": self.nominal_mm,
-                "tolerance_mm": self.tolerance_mm,
-                "score_A": 0.0, "score_B": 0.0,
-                "pt_a": None, "pt_b": None,
-                "is_valid": False
-            }
-
-        src = np.float32([kp[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-        dst = np.float32([self.ref_kp[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-
+        
         H = None
-        # 1. Try rigid affine transform first (rotation + translation + uniform scale)
-        # Highly robust for flat metal parts on a tray
-        M, inl_aff = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=5.0)
-        if M is not None and inl_aff.sum() >= 6:
-            H = np.vstack([M, [0, 0, 1]])
-        else:
-            # 2. Fallback to full perspective homography
-            H_cand, inl_h = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
-            if H_cand is not None and inl_h.sum() >= 6:
-                H = H_cand
+        if des is not None and len(kp) >= 15:
+            good = [m for m, n in (p for p in self.matcher.knnMatch(self.ref_des, des, k=2) if len(p) == 2)
+                    if m.distance < 0.85 * n.distance]
+            if len(good) >= 4:
+                src = np.float32([kp[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+                dst = np.float32([self.ref_kp[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
 
-        if H is None:
-            return {
-                "status": "ALIGNMENT FAILED",
-                "mm": None, "dev": None,
-                "nominal_mm": self.nominal_mm,
-                "tolerance_mm": self.tolerance_mm,
-                "score_A": 0.0, "score_B": 0.0,
-                "pt_a": None, "pt_b": None,
-                "is_valid": False
-            }
+                # 1. Try rigid affine transform first (rotation + translation + uniform scale)
+                M, inl_aff = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=6.0)
+                if M is not None and inl_aff.sum() >= 4:
+                    H = np.vstack([M, [0, 0, 1]])
+                else:
+                    # 2. Fallback to full perspective homography
+                    H_cand, inl_h = cv2.findHomography(src, dst, cv2.RANSAC, 6.0)
+                    if H_cand is not None and inl_h.sum() >= 4:
+                        H = H_cand
 
-        work = cv2.warpPerspective(scaled_frame, H, (self.w, self.h))
-        work_gray = self.preprocess(work)
+        # If aligned frame is available, measure on warped frame
+        if H is not None:
+            work = cv2.warpPerspective(scaled_frame, H, (self.w, self.h))
+            work_gray = self.preprocess(work)
 
-        pa, sa = self.locate(work_gray, "A")
-        pb, sb = self.locate(work_gray, "B")
-        if pa is None or pb is None or min(sa, sb) < self.min_match_score:
-            missing = []
-            if sa < self.min_match_score: missing.append("CATCH PLUG")
-            if sb < self.min_match_score: missing.append("TRIMLINE")
-            return {
-                "status": f"{' & '.join(missing)} NOT FOUND",
-                "mm": None, "dev": None,
-                "nominal_mm": self.nominal_mm,
-                "tolerance_mm": self.tolerance_mm,
-                "score_A": float(sa), "score_B": float(sb),
-                "pt_a": None, "pt_b": None,
-                "is_valid": False
-            }
+            pa, sa = self.locate(work_gray, "A")
+            pb, sb = self.locate(work_gray, "B")
 
-        dist_px = abs(pb[0] - pa[0]) if self.axis == "x" else float(np.hypot(pb[0] - pa[0], pb[1] - pa[1]))
-        dist_mm = dist_px * self.mm_per_px
-        dev = dist_mm - self.nominal_mm
-        status = "OK" if abs(dev) <= self.tolerance_mm + 1e-9 else "NG"
+            # Dynamic recovery on search margin if borderline
+            if pa is None or pb is None or min(sa, sb) < self.min_match_score:
+                pa_rec, sa_rec = self.locate(work_gray, "A", margin=180)
+                pb_rec, sb_rec = self.locate(work_gray, "B", margin=180)
+                if pa_rec is not None and pb_rec is not None and min(sa_rec, sb_rec) >= self.min_match_score:
+                    pa, sa = pa_rec, sa_rec
+                    pb, sb = pb_rec, sb_rec
 
-        # Project points back to original unwarped frame coordinates
-        try:
-            H_inv = np.linalg.inv(H)
-            by_coord = pa[1] if self.axis == "x" else pb[1]
-            pts_ref = np.array([[[pa[0], pa[1]]], [[pb[0], by_coord]]], dtype=np.float32)
-            pts_orig = cv2.perspectiveTransform(pts_ref, H_inv).reshape(-1, 2)
+            if pa is not None and pb is not None and min(sa, sb) >= self.min_match_score:
+                dist_px = abs(pb[0] - pa[0]) if self.axis == "x" else float(np.hypot(pb[0] - pa[0], pb[1] - pa[1]))
+                dist_mm = dist_px * self.mm_per_px
+                dev = dist_mm - self.nominal_mm
 
-            if need_resize:
-                scale_x = orig_w / float(self.w)
-                scale_y = orig_h / float(self.h)
-                pt_a = (float(pts_orig[0][0] * scale_x), float(pts_orig[0][1] * scale_y))
-                pt_b = (float(pts_orig[1][0] * scale_x), float(pts_orig[1][1] * scale_y))
-            else:
-                pt_a = (float(pts_orig[0][0]), float(pts_orig[0][1]))
-                pt_b = (float(pts_orig[1][0]), float(pts_orig[1][1]))
-        except Exception:
-            pt_a = None
-            pt_b = None
+                # Physical plausibility gate: Fuel door distance must be within plausible physical range
+                if abs(dev) <= 8.0:
+                    status = "OK" if abs(dev) <= self.tolerance_mm + 1e-9 else "NG"
+
+                    try:
+                        H_inv = np.linalg.inv(H)
+                        by_coord = pa[1] if self.axis == "x" else pb[1]
+                        pts_ref = np.array([[[pa[0], pa[1]]], [[pb[0], by_coord]]], dtype=np.float32)
+                        pts_orig = cv2.perspectiveTransform(pts_ref, H_inv).reshape(-1, 2)
+
+                        if need_resize:
+                            scale_x = orig_w / float(self.w)
+                            scale_y = orig_h / float(self.h)
+                            pt_a = (float(pts_orig[0][0] * scale_x), float(pts_orig[0][1] * scale_y))
+                            pt_b = (float(pts_orig[1][0] * scale_x), float(pts_orig[1][1] * scale_y))
+                        else:
+                            pt_a = (float(pts_orig[0][0]), float(pts_orig[0][1]))
+                            pt_b = (float(pts_orig[1][0]), float(pts_orig[1][1]))
+                    except Exception:
+                        pt_a = None
+                        pt_b = None
+
+                    return {
+                        "status": status,
+                        "mm": float(dist_mm),
+                        "dev": float(dev),
+                        "nominal_mm": float(self.nominal_mm),
+                        "tolerance_mm": float(self.tolerance_mm),
+                        "score_A": float(sa),
+                        "score_B": float(sb),
+                        "pt_a": pt_a,
+                        "pt_b": pt_b,
+                        "is_valid": True
+                    }
+
+        # Level 3: Direct Fixture Dynamic Recovery
+        # When ORB feature alignment fails due to lighting or texture, search directly in the guided fixture tray
+        pa_dir, sa_dir = self.locate(gray, "A", margin=180)
+        pb_dir, sb_dir = self.locate(gray, "B", margin=180)
+        if pa_dir is not None and pb_dir is not None and min(sa_dir, sb_dir) >= 0.60:
+            # Physical geometric plausibility gate: Catch plug and trimline are horizontally aligned
+            if abs(pa_dir[1] - pb_dir[1]) < 80:
+                dist_px = abs(pb_dir[0] - pa_dir[0]) if self.axis == "x" else float(np.hypot(pb_dir[0] - pa_dir[0], pb_dir[1] - pa_dir[1]))
+                dist_mm = dist_px * self.mm_per_px
+                dev = dist_mm - self.nominal_mm
+                if abs(dev) <= 10.0:  # Must be in reasonable physical range around 140.77 mm
+                    status = "OK" if abs(dev) <= self.tolerance_mm + 1e-9 else "NG"
+
+                    if need_resize:
+                        scale_x = orig_w / float(self.w)
+                        scale_y = orig_h / float(self.h)
+                        pt_a = (float(pa_dir[0] * scale_x), float(pa_dir[1] * scale_y))
+                        pt_b = (float(pb_dir[0] * scale_x), float(pb_dir[1] * scale_y))
+                    else:
+                        pt_a = (float(pa_dir[0]), float(pa_dir[1]))
+                        pt_b = (float(pb_dir[0]), float(pb_dir[1]))
+
+                    return {
+                        "status": status,
+                        "mm": float(dist_mm),
+                        "dev": float(dev),
+                        "nominal_mm": float(self.nominal_mm),
+                        "tolerance_mm": float(self.tolerance_mm),
+                        "score_A": float(sa_dir),
+                        "score_B": float(sb_dir),
+                        "pt_a": pt_a,
+                        "pt_b": pt_b,
+                        "is_valid": True,
+                        "dynamic_recovery": True
+                    }
 
         return {
-            "status": status,
-            "mm": float(dist_mm),
-            "dev": float(dev),
-            "nominal_mm": float(self.nominal_mm),
-            "tolerance_mm": float(self.tolerance_mm),
-            "score_A": float(sa),
-            "score_B": float(sb),
-            "pt_a": pt_a,
-            "pt_b": pt_b,
-            "is_valid": True
+            "status": "ALIGNMENT FAILED",
+            "mm": None, "dev": None,
+            "nominal_mm": self.nominal_mm,
+            "tolerance_mm": self.tolerance_mm,
+            "score_A": 0.0, "score_B": 0.0,
+            "pt_a": None, "pt_b": None,
+            "is_valid": False
         }
 
     @staticmethod
