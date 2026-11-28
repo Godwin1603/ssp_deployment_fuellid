@@ -299,7 +299,12 @@ active_cycle_data = {
     "front_missing_frames": 0,
     "orb_override_key": None,
     "orb_override_count": 0,
-    "dist_ng_streak": 0
+    "dist_ng_streak": 0,
+    "dist_history": [],
+    "stable_dist_mm": None,
+    "dist_last_model": None,
+    "dist_last_center": None,
+    "dist_hold_frames": 0
 }
 
 # Global placeholders for decoupled streaming speedup
@@ -698,17 +703,18 @@ def process_ocr_async(crop_img, temp_folder, crop_num, c_data):
                             cv2.imwrite(back_file, back_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
                             c_data["back_path"] = back_file
 
-                    # Always set step3 OK and transition state when OCR finalizes.
-                    # Use is_active OR check serial match to cover the race where
-                    # reset_cycle_state() replaced active_cycle_data before this thread ran.
-                    # Guard: only update current_cycle if the displayed serial matches this result
-                    # (prevents a stale OCR thread from updating a brand-new cycle's status).
-                    c_data["state"] = "WAITING_REMOVE"
+                    # Record serial and update UI Step 3 OK.
+                    # Do NOT force WAITING_REMOVE or call check_and_finalize_cycle here.
+                    # Cycle stays in WAITING_BACK to allow continuous distance stabilization and live inspection
+                    # until the part is taken outside (none detected) or a new front panel is placed.
+                    c_data["serial_number"] = final_serial
+                    c_data["ocr_confidence"] = final_conf
                     if is_active or current_cycle.get("serial") == final_serial:
+                        current_cycle["serial"] = final_serial
+                        current_cycle["confidence"] = f"{final_conf:.2f}%"
                         current_cycle["step3_status"] = "OK"
 
-                    logger.info(f"[OCR Thread] Finalized: {final_serial} ({final_conf:.1f}%)")
-                    check_and_finalize_cycle(c_data)
+                    logger.info(f"[OCR Thread] Confirmed: {final_serial} ({final_conf:.1f}%). Part remains in WAITING_BACK for distance gauge stabilization & removal.")
         else:
             logger.info(f"[OCR Thread] Crop {crop_num}: no valid 6-digit serial found")
     except Exception as e:
@@ -794,40 +800,42 @@ def finalize_report_and_rename(c_data):
                 time.sleep(0.3)
 
             with lock:
-                if active_cycle_data["serial_number"] is None:
-                    active_cycle_data["serial_number"] = "serial_missing"
-                    active_cycle_data["ocr_confidence"] = 0.0
-                    current_cycle["serial"] = "serial_missing"
-                    current_cycle["confidence"] = "0.0%"
+                if c_data.get("serial_number") is None:
+                    c_data["serial_number"] = "serial_missing"
+                    c_data["ocr_confidence"] = 0.0
+                    if c_data is active_cycle_data:
+                        current_cycle["serial"] = "serial_missing"
+                        current_cycle["confidence"] = "0.0%"
                     print("[Finalize] Recheck completed: Still serial_missing")
                 else:
-                    print(f"[Finalize] Recheck succeeded: {active_cycle_data['serial_number']}")
+                    print(f"[Finalize] Recheck succeeded: {c_data['serial_number']}")
 
         # Read defects and verify holes to determine PASS/FAIL early
         with lock:
-            if active_cycle_data["max_holes_detected"] < 2:
-                active_cycle_data["defects_detected"].add("holes_missing")
-            if active_cycle_data["serial_number"] == "serial_missing":
-                active_cycle_data["defects_detected"].add("serial_missing")
+            if c_data.get("max_holes_detected", 0) < 2:
+                c_data.setdefault("defects_detected", set()).add("holes_missing")
+            if c_data.get("serial_number") == "serial_missing":
+                c_data.setdefault("defects_detected", set()).add("serial_missing")
 
             # Distance measurement and distance defects apply to RECTANGLE (SU21/LWB), POLYGEN (AI3), and CIRCLE
-            part_key = str(c_data.get("locked_model_key") or active_cycle_data.get("locked_model_key") or current_cycle.get("part_type") or "").upper()
+            part_key = str(c_data.get("locked_model_key") or current_cycle.get("part_type") or "").upper()
             is_gauge_cycle = part_key in ("RECTANGLE", "POLYGEN", "POLYGON", "CIRCLE")
             if not is_gauge_cycle:
-                active_cycle_data["defects_detected"].discard("distance_out_of_spec")
-                active_cycle_data["defects_detected"].discard("distance_ng")
+                c_data.setdefault("defects_detected", set()).discard("distance_out_of_spec")
+                c_data.setdefault("defects_detected", set()).discard("distance_ng")
                 c_data["distance_measurement"] = None
             else:
-                dm = c_data.get("distance_measurement") or active_cycle_data.get("distance_measurement")
+                dm = c_data.get("distance_measurement")
                 if dm and dm.get("is_valid"):
                     if dm.get("status") == "NG":
-                        active_cycle_data["defects_detected"].add("distance_out_of_spec")
+                        c_data.setdefault("defects_detected", set()).add("distance_out_of_spec")
                     else:
-                        active_cycle_data["defects_detected"].discard("distance_out_of_spec")
-                        active_cycle_data["defects_detected"].discard("distance_ng")
+                        c_data.setdefault("defects_detected", set()).discard("distance_out_of_spec")
+                        c_data.setdefault("defects_detected", set()).discard("distance_ng")
 
-            defects = list(active_cycle_data["defects_detected"])
-            current_cycle["defects"] = defects
+            defects = list(c_data.get("defects_detected", []))
+            if c_data is active_cycle_data:
+                current_cycle["defects"] = defects
         status = "FAIL" if defects else "PASS"
 
         # Now that we have the final serial number and pass/fail status, instruct operator
@@ -841,12 +849,12 @@ def finalize_report_and_rename(c_data):
                     current_cycle["instruction_color"] = "red"
                 current_cycle["status"] = "Saving report..."
         
-        temp_dir = active_cycle_data["temp_folder"]
-        serial = active_cycle_data["serial_number"]
-        front = active_cycle_data["front_path"]
-        back = active_cycle_data["back_path"]
-        conf = active_cycle_data["ocr_confidence"]
-        defect_frame = active_cycle_data.get("defect_frame_path")  # Annotated frame with defect markings
+        temp_dir = c_data.get("temp_folder")
+        serial = c_data.get("serial_number")
+        front = c_data.get("front_path")
+        back = c_data.get("back_path")
+        conf = c_data.get("ocr_confidence", 0.0)
+        defect_frame = c_data.get("defect_frame_path")  # Annotated frame with defect markings
         
         # Check folder structure and resolve if serial folder already exists
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -973,11 +981,30 @@ def finalize_report_and_rename(c_data):
     except Exception as e:
         print(f"[Finalize Thread] Error: {e}")
 
+def _stamp_final_distance_overlay(c_data):
+    """Draws latest stabilized distance overlay onto the back image file before report generation."""
+    try:
+        if SU21_GAUGE is None:
+            return
+        dm = c_data.get("distance_measurement")
+        if not dm or not dm.get("is_valid"):
+            return
+        back_file = c_data.get("back_path")
+        if back_file and os.path.exists(back_file):
+            back_img = cv2.imread(back_file)
+            if back_img is not None:
+                SU21_GAUGE.draw_overlay(back_img, dm, scale=1.0)
+                cv2.imwrite(back_file, back_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                c_data["distance_overlay_drawn"] = True
+                logger.info(f"[Distance Gauge] Stamped final stabilized measurement ({dm.get('mm', 0):.2f} mm) on {back_file}")
+    except Exception as e:
+        logger.error(f"[Distance Gauge] Error stamping final distance overlay: {e}")
+
 def check_and_finalize_cycle(c_data):
     """Verifies if front and back have been captured, then triggers finalization."""
-    if (c_data["front_path"] and 
-        c_data["back_path"] and 
-        not c_data["processing_thread_active"]):
+    if (c_data.get("front_path") and 
+        c_data.get("back_path") and 
+        not c_data.get("processing_thread_active")):
         
         c_data["processing_thread_active"] = True
         threading.Thread(target=finalize_report_and_rename, args=(c_data,), daemon=True).start()
@@ -1041,7 +1068,12 @@ def reset_cycle_state():
             "front_missing_frames": 0,
             "orb_override_key": None,
             "orb_override_count": 0,
-            "dist_ng_streak": 0
+            "dist_ng_streak": 0,
+            "dist_history": [],
+            "stable_dist_mm": None,
+            "dist_last_model": None,
+            "dist_last_center": None,
+            "dist_hold_frames": 0
         }
 
 # -------------------------------
@@ -2204,7 +2236,8 @@ def yolo_worker_loop():
                         if class_name in ["serial", "serial_area"]:
                             has_serial_detected = True
                         elif class_name == "holes":
-                            has_holes_detected = True
+                            if frame_has_back or (not frame_has_front and not frame_has_back):
+                                has_holes_detected = True
                     
                     if class_name in DEFECT_CLASSES:
                         if class_name in ["hole_missing", "hole_spec_error"] and not frame_has_back:
@@ -2333,6 +2366,7 @@ def yolo_worker_loop():
                         plug_box=plug_box,
                         plug_class=plug_class,
                         variant_hint=variant_hint,
+                        back_box=back_box,
                     )
                 except Exception as g_err:
                     logger.error(f"[Distance Gauge] Error during measurement: {g_err}")
@@ -2344,12 +2378,94 @@ def yolo_worker_loop():
                     current_cycle["gauge_distance"] = None
                     active_cycle_data["distance_measurement"] = None
                     active_cycle_data["dist_ng_streak"] = 0
+                    active_cycle_data["dist_history"] = []
+                    active_cycle_data["stable_dist_mm"] = None
+                    active_cycle_data["dist_last_model"] = None
+                    active_cycle_data["dist_last_center"] = None
+                    active_cycle_data["dist_hold_frames"] = 0
                     active_cycle_data["defects_detected"].discard("distance_out_of_spec")
                     active_cycle_data["defects_detected"].discard("distance_ng")
                     if "distance_out_of_spec" in frame_defects or "distance_ng" in frame_defects:
                         frame_defects = [d for d in frame_defects if d not in ("distance_out_of_spec", "distance_ng")]
                 else:
-                    if distance_measurement_res and distance_measurement_res.get("is_valid"):
+                    # Detect physical part movement (> 25 px shift) so old overlay/history never stick at old position
+                    cur_part_center = None
+                    if back_box is not None:
+                        cur_part_center = ((back_box[0] + back_box[2]) * 0.5, (back_box[1] + back_box[3]) * 0.5)
+                    elif plug_box is not None:
+                        cur_part_center = ((plug_box[0] + plug_box[2]) * 0.5, (plug_box[1] + plug_box[3]) * 0.5)
+
+                    prev_part_center = active_cycle_data.get("dist_last_center")
+                    if cur_part_center is not None and prev_part_center is not None:
+                        shift_px = float(np.hypot(cur_part_center[0] - prev_part_center[0], cur_part_center[1] - prev_part_center[1]))
+                        if shift_px > 25.0:
+                            active_cycle_data["dist_history"] = []
+                            active_cycle_data["stable_dist_mm"] = None
+                            active_cycle_data["dist_ng_streak"] = 0
+                            active_cycle_data["dist_hold_frames"] = 0
+                            active_cycle_data["distance_measurement"] = None
+                            current_distance_overlay = None
+                            current_cycle["gauge_distance"] = None
+                            active_cycle_data["dist_last_center"] = cur_part_center
+
+                    if distance_measurement_res and distance_measurement_res.get("is_valid") and distance_measurement_res.get("mm") is not None:
+                        active_cycle_data["dist_hold_frames"] = 0
+                        if cur_part_center is not None:
+                            active_cycle_data["dist_last_center"] = cur_part_center
+                        elif distance_measurement_res.get("pt_a") and distance_measurement_res.get("pt_b"):
+                            pa_r, pb_r = distance_measurement_res["pt_a"], distance_measurement_res["pt_b"]
+                            active_cycle_data["dist_last_center"] = ((pa_r[0] + pb_r[0]) * 0.5, (pa_r[1] + pb_r[1]) * 0.5)
+
+                        # --- Temporal Stabilization Filter (Rolling Median + Deadband Hysteresis) ---
+                        gauge_cfg = APP_CONFIG.get("ai", {}).get("gauge", {}) if isinstance(APP_CONFIG.get("ai"), dict) else {}
+                        hist_window = int(gauge_cfg.get("history_window", 7))
+                        deadband = float(gauge_cfg.get("deadband_mm", 0.05))
+                        ema_alpha = float(gauge_cfg.get("smoothing_factor", 0.35))
+
+                        cur_model = distance_measurement_res.get("model_name")
+                        last_model = active_cycle_data.get("dist_last_model")
+                        dist_hist = active_cycle_data.setdefault("dist_history", [])
+                        if last_model != cur_model:
+                            dist_hist.clear()
+                            active_cycle_data["stable_dist_mm"] = None
+                            active_cycle_data["dist_last_model"] = cur_model
+
+                        raw_mm = float(distance_measurement_res["mm"])
+                        dist_hist.append(raw_mm)
+                        if len(dist_hist) > hist_window:
+                            dist_hist.pop(0)
+
+                        # 1. Median filter over window of recent frames (rejects glare/blur outliers)
+                        med_mm = float(np.median(dist_hist))
+
+                        # 2. Deadband / Hysteresis (suppresses micro-pixel jitter from re-triggering UI changes)
+                        prev_stable = active_cycle_data.get("stable_dist_mm")
+                        if prev_stable is None:
+                            stable_mm = med_mm
+                        else:
+                            delta = abs(med_mm - prev_stable)
+                            if delta < deadband:
+                                stable_mm = prev_stable
+                            else:
+                                # Smooth EMA transition towards the new median
+                                stable_mm = (ema_alpha * med_mm) + ((1.0 - ema_alpha) * prev_stable)
+                                if abs(med_mm - stable_mm) < 0.015:
+                                    stable_mm = med_mm
+
+                        active_cycle_data["stable_dist_mm"] = stable_mm
+
+                        # 3. Recalculate deviation and status using the stabilized distance
+                        nom_mm = float(distance_measurement_res.get("nominal_mm", 140.769))
+                        tol_mm = float(distance_measurement_res.get("tolerance_mm", 1.0))
+                        final_mm = round(float(stable_mm), 2)
+                        final_dev = round(float(final_mm - nom_mm), 2)
+                        final_status = "OK" if abs(final_dev) <= (tol_mm + 1e-9) else "NG"
+
+                        distance_measurement_res["raw_mm"] = raw_mm
+                        distance_measurement_res["mm"] = final_mm
+                        distance_measurement_res["dev"] = final_dev
+                        distance_measurement_res["status"] = final_status
+
                         if distance_measurement_res["status"] == "NG":
                             active_cycle_data["dist_ng_streak"] = active_cycle_data.get("dist_ng_streak", 0) + 1
                             if active_cycle_data["dist_ng_streak"] >= 2:
@@ -2375,13 +2491,25 @@ def yolo_worker_loop():
                             current_cycle["gauge_distance"] = distance_measurement_res
                             active_cycle_data["defects_detected"].discard("distance_out_of_spec")
                             active_cycle_data["defects_detected"].discard("distance_ng")
-                    elif active_cycle_data.get("distance_measurement") and active_cycle_data["distance_measurement"].get("is_valid"):
-                        # Dynamic recovery retention: hold valid measurement across transient blurs/flickers
-                        current_distance_overlay = active_cycle_data["distance_measurement"]
-                        current_cycle["gauge_distance"] = active_cycle_data["distance_measurement"]
+                    elif (
+                        state == "WAITING_BACK"
+                        and (has_back_detected or detected_back_panel_class is not None)
+                        and active_cycle_data.get("distance_measurement")
+                        and active_cycle_data["distance_measurement"].get("is_valid")
+                    ):
+                        # Dynamic recovery retention: hold briefly ONLY across up to 3 frames of transient blur
+                        hold_cnt = active_cycle_data.get("dist_hold_frames", 0) + 1
+                        active_cycle_data["dist_hold_frames"] = hold_cnt
+                        if hold_cnt <= 3:
+                            current_distance_overlay = active_cycle_data["distance_measurement"]
+                            current_cycle["gauge_distance"] = active_cycle_data["distance_measurement"]
+                        else:
+                            current_distance_overlay = None
+                            current_cycle["gauge_distance"] = None
                     else:
-                        current_distance_overlay = distance_measurement_res
-                        current_cycle["gauge_distance"] = distance_measurement_res
+                        active_cycle_data["dist_hold_frames"] = 0
+                        current_distance_overlay = None
+                        current_cycle["gauge_distance"] = None
                         
             # --- Defect Frame Save ---
             # When defects are detected on the front panel, save the annotated frame once per cycle.
@@ -2543,6 +2671,13 @@ def yolo_worker_loop():
                             2, max(active_cycle_data["max_holes_detected"], frame_holes)
                         )
 
+                # Precompute OCR state flags before state machine so all branches and post-updates can safely reference them
+                ocr_done = active_cycle_data.get("serial_number") is not None
+                _ocr_start = active_cycle_data.get("ocr_start_time")
+                _back_seen = active_cycle_data.get("back_first_seen_time")
+                ocr_timeout = ((_ocr_start is not None) and (time.time() - _ocr_start > OCR_FALLBACK_TIMEOUT)) or \
+                              ((_back_seen is not None) and (time.time() - _back_seen > (OCR_FALLBACK_TIMEOUT + 0.5)))
+
                 # Strict State Machine Logic
                 if state == "WAITING_FRONT":
                     current_cycle["status"] = "Waiting for Front Panel"
@@ -2653,8 +2788,14 @@ def yolo_worker_loop():
                     if active_cycle_data.get("back_path") is not None:
                         current_cycle["step3_status"] = "OK"
                         if ocr_done:
-                            active_cycle_data["state"] = "WAITING_REMOVE"
-                            check_and_finalize_cycle(active_cycle_data)
+                            if active_cycle_data.get("defects_detected") or current_cycle.get("result") in ["NG", "FAIL"]:
+                                current_cycle["instruction"] = "NG - REMOVE THE PLATE"
+                                current_cycle["instruction_color"] = "red"
+                                current_cycle["status"] = "Inspection Complete (Defect Detected)"
+                            else:
+                                current_cycle["instruction"] = "OK - REMOVE THE PLATE"
+                                current_cycle["instruction_color"] = "green"
+                                current_cycle["status"] = "Inspection Complete (PASS)"
                         else:
                             current_cycle["status"] = "Detecting Serial Number..."
                             current_cycle["instruction"] = "DETECTING SERIAL NUMBER..."
@@ -2665,12 +2806,14 @@ def yolo_worker_loop():
                         current_cycle["instruction_color"] = "blue"
                     
                     # DYNAMIC RECOVERY FOR RECTANGLE & POLYGON DISTANCE MEASUREMENT:
-                    # If distance gauge obtained a valid distance measurement (or already held one in cycle),
-                    # that is definitive physical proof that the back panel is sitting on the tray!
-                    dist_valid = bool(is_gauge_model and not front_only_visible and not orb_switching and (
-                        (distance_measurement_res and distance_measurement_res.get("is_valid")) or 
-                        (active_cycle_data.get("distance_measurement") and active_cycle_data["distance_measurement"].get("is_valid"))
-                    ))
+                    # Only treat current-frame valid gauge measurement as physical proof of back panel presence.
+                    dist_valid = bool(
+                        is_gauge_model
+                        and not front_only_visible
+                        and not orb_switching
+                        and distance_measurement_res
+                        and distance_measurement_res.get("is_valid")
+                    )
 
                     if dist_valid:
                         has_back_detected = True
@@ -2683,10 +2826,10 @@ def yolo_worker_loop():
                         front_box = None
                         has_front_detected = False
 
-                    is_back_visible = (back_box is not None) or has_back_detected or has_serial_detected or has_holes_detected or ocr_done or dist_valid
-                    is_front_misplaced = front_box is not None and not has_back_detected and not has_serial_detected and not ocr_done and not dist_valid
+                    is_back_visible = (back_box is not None) or has_back_detected or has_serial_detected or has_holes_detected or dist_valid
+                    is_front_misplaced = (front_box is not None) and not has_back_detected and not has_serial_detected and not dist_valid
                     
-                    if (is_back_visible or ocr_done) and not is_front_misplaced:
+                    if is_back_visible and not is_front_misplaced:
                         if roi_warning and not ocr_done and not dist_valid:
                             active_cycle_data["back_frames_count"] = 0
                             active_cycle_data["back_first_seen_time"] = None
@@ -2754,35 +2897,66 @@ def yolo_worker_loop():
                                 # Step 3 = OK immediately the moment back is confirmed
                                 current_cycle["step3_status"] = "OK"
                                 
-                                if ocr_done or ocr_timeout:
-                                    # OCR finished or timed out — finalize now
-                                    active_cycle_data["state"] = "WAITING_REMOVE"
-                                    check_and_finalize_cycle(active_cycle_data)
+                                if ocr_timeout and not ocr_done:
+                                    active_cycle_data["serial_number"] = "serial_missing"
+                                    current_cycle["serial"] = "serial_missing"
+                                    current_cycle["confidence"] = "0.00%"
+                                    current_cycle["instruction"] = "NG - SERIAL MISSING - REMOVE THE PLATE"
+                                    current_cycle["instruction_color"] = "red"
+                                    current_cycle["status"] = "Inspection Complete (Serial Missing)"
+                                elif ocr_done:
+                                    if active_cycle_data.get("defects_detected") or current_cycle.get("result") in ["NG", "FAIL"]:
+                                        current_cycle["instruction"] = "NG - REMOVE THE PLATE"
+                                        current_cycle["instruction_color"] = "red"
+                                        current_cycle["status"] = "Inspection Complete (Defect Detected)"
+                                    else:
+                                        current_cycle["instruction"] = "OK - REMOVE THE PLATE"
+                                        current_cycle["instruction_color"] = "green"
+                                        current_cycle["status"] = "Inspection Complete (PASS)"
                                 else:
-                                    # Back saved, step3=OK, but OCR still running — stay in WAITING_BACK
+                                    # Back saved, but OCR still running — stay in WAITING_BACK
                                     current_cycle["status"] = "Detecting Serial Number..."
                                     current_cycle["instruction"] = "DETECTING SERIAL NUMBER..."
                                     current_cycle["instruction_color"] = "blue"
                     else:
                         # With or without flickering: do not wipe back_confirmed_frames on transient flickers
                         active_cycle_data["back_first_seen_time"] = None
-                        if is_front_misplaced:
-                            # Operator placed a front panel instead of flipping to back
-                            active_cycle_data["back_confirmed_frames"] = 0
-                            current_cycle["status"] = "Front Panel Detected!"
-                            current_cycle["instruction"] = "PLEASE FLIP DOOR TO BACK SIDE"
-                            current_cycle["instruction_color"] = "orange"
-                            active_cycle_data["empty_tray_back_count"] = 0
+                        back_inspected = (active_cycle_data.get("back_path") is not None) and (ocr_done or ocr_timeout)
+
+                        if back_inspected:
+                            # Trigger 2: Fast swap — operator directly placed a new front panel
+                            if front_box is not None and has_front_detected and not has_back_detected:
+                                logger.info("[State] New FRONT panel detected after back inspection — closing cycle and starting next.")
+                                _stamp_final_distance_overlay(active_cycle_data)
+                                check_and_finalize_cycle(active_cycle_data)
+                                needs_reset = True
+                            else:
+                                # Trigger 1: Part taken outside (none detected for 3 consecutive frames)
+                                active_cycle_data["empty_tray_back_count"] = active_cycle_data.get("empty_tray_back_count", 0) + 1
+                                if active_cycle_data["empty_tray_back_count"] >= 3:
+                                    logger.info(f"[State] Part taken outside (none detected for 3 frames) — closing cycle for serial {active_cycle_data.get('serial_number')}")
+                                    _stamp_final_distance_overlay(active_cycle_data)
+                                    check_and_finalize_cycle(active_cycle_data)
+                                    needs_reset = True
                         else:
-                            # Tray is empty while waiting for back
-                            active_cycle_data["empty_tray_back_count"] = active_cycle_data.get("empty_tray_back_count", 0) + 1
-                            # Only if tray is empty for > 15 frames do we consider it a true absence
-                            if active_cycle_data["empty_tray_back_count"] > 15 and active_cycle_data.get("back_path") is None:
+                            # Back was not yet completed
+                            if is_front_misplaced:
+                                # Operator placed a front panel instead of flipping to back
                                 active_cycle_data["back_confirmed_frames"] = 0
-                            # If tray is empty for > 3 seconds (90 frames), operator abandoned part: reset back to AUTO
-                            if active_cycle_data["empty_tray_back_count"] > 90:
-                                logger.info("[Abort] Tray empty in WAITING_BACK for >3s. Aborting abandoned cycle and resetting to AUTO.")
-                                reset_cycle_state()
+                                current_cycle["status"] = "Front Panel Detected!"
+                                current_cycle["instruction"] = "PLEASE FLIP DOOR TO BACK SIDE"
+                                current_cycle["instruction_color"] = "orange"
+                                active_cycle_data["empty_tray_back_count"] = 0
+                            else:
+                                # Tray is empty while waiting for back
+                                active_cycle_data["empty_tray_back_count"] = active_cycle_data.get("empty_tray_back_count", 0) + 1
+                                # Only if tray is empty for > 15 frames do we consider it a true absence
+                                if active_cycle_data["empty_tray_back_count"] > 15 and active_cycle_data.get("back_path") is None:
+                                    active_cycle_data["back_confirmed_frames"] = 0
+                                # If tray is empty for > 3 seconds (90 frames), operator abandoned part: reset back to AUTO
+                                if active_cycle_data["empty_tray_back_count"] > 90:
+                                    logger.info("[Abort] Tray empty in WAITING_BACK for >3s. Aborting abandoned cycle and resetting to AUTO.")
+                                    reset_cycle_state()
 
                         
                 elif state == "WAITING_REMOVE":
@@ -2798,22 +2972,41 @@ def yolo_worker_loop():
                     any_lid_visible = has_front_detected or has_back_detected or len(sub_feature_boxes) > 0
                     if not any_lid_visible:
                         active_cycle_data["remove_frames_count"] += 1
-                        # Immediately clear the serial from the UI on the very first frame
-                        # the part is gone, so the client sees the screen is ready for next part
+                        # Immediately clear the serial and distance from the UI on the very first frame
                         if active_cycle_data["remove_frames_count"] == 1:
                             current_cycle["serial"] = "------"
                             current_cycle["confidence"] = "- -"
                             current_cycle["status"] = "Plate removed. Saving report..."
                             current_cycle["instruction"] = "REMOVE COMPLETE - SAVING..."
                             current_cycle["instruction_color"] = "orange"
+                            current_cycle["gauge_distance"] = None
+                            current_distance_overlay = None
+                            active_cycle_data["distance_measurement"] = None
+                            active_cycle_data["dist_history"] = []
+                            active_cycle_data["stable_dist_mm"] = None
+                            active_cycle_data["dist_last_model"] = None
                         if active_cycle_data["remove_frames_count"] >= 3:
+                            _stamp_final_distance_overlay(active_cycle_data)
+                            check_and_finalize_cycle(active_cycle_data)
                             needs_reset = True
                     elif front_box is not None and not has_back_detected and not has_serial_detected:
                         # A NEW front panel appeared — the operator has placed the next part.
-                        # Reset immediately so the new cycle starts cleanly without the old serial.
                         logger.info("[State] New FRONT detected in WAITING_REMOVE — auto-resetting for next cycle.")
+                        _stamp_final_distance_overlay(active_cycle_data)
+                        check_and_finalize_cycle(active_cycle_data)
                         needs_reset = True
                     else:
+                        # Fallback: if no front and no back panel is detected for 10 frames in WAITING_REMOVE,
+                        # plate was removed even if minor sub_feature noise exists on the empty jig
+                        if not has_front_detected and not has_back_detected:
+                            active_cycle_data["no_panel_remove_count"] = active_cycle_data.get("no_panel_remove_count", 0) + 1
+                            if active_cycle_data["no_panel_remove_count"] >= 10:
+                                logger.info("[State] No panel detected in WAITING_REMOVE for 10 frames — auto-resetting.")
+                                _stamp_final_distance_overlay(active_cycle_data)
+                                check_and_finalize_cycle(active_cycle_data)
+                                needs_reset = True
+                        else:
+                            active_cycle_data["no_panel_remove_count"] = 0
                         active_cycle_data["remove_frames_count"] = 0
                         
                 # Update UI data outside state transitions
@@ -2824,12 +3017,16 @@ def yolo_worker_loop():
                         current_defects.append("out_of_bounds")
                     current_cycle["defects"] = current_defects
                     
-                    # Defect result assignment: only finalize to NG in WAITING_REMOVE or completion
-                    if active_cycle_data["defects_detected"] and cur_state == "WAITING_REMOVE":
+                    # Defect result assignment: finalize result in WAITING_REMOVE or when back checks complete
+                    is_back_done = (ocr_done or ocr_timeout) and (active_cycle_data.get("back_path") is not None)
+                    if active_cycle_data["defects_detected"] and (cur_state == "WAITING_REMOVE" or is_back_done):
                         current_cycle["instruction_color"] = "red"
                         current_cycle["result"] = "NG"
+                    elif is_back_done and not active_cycle_data["defects_detected"]:
+                        current_cycle["instruction_color"] = "green"
+                        current_cycle["result"] = "PASS"
                     elif cur_state != "WAITING_REMOVE" and not current_cycle["status"].startswith("Finished Cycle"):
-                        if current_cycle["result"] == "NG":
+                        if current_cycle["result"] in ["NG", "PASS"] and not is_back_done:
                             current_cycle["result"] = "Awaiting analysis..."
             if needs_reset:
                 reset_cycle_state()
@@ -3070,6 +3267,11 @@ def set_model():
             current_cycle["gauge_distance"] = None
             active_cycle_data["distance_measurement"] = None
             active_cycle_data["dist_ng_streak"] = 0
+            active_cycle_data["dist_history"] = []
+            active_cycle_data["stable_dist_mm"] = None
+            active_cycle_data["dist_last_model"] = None
+            active_cycle_data["dist_last_center"] = None
+            active_cycle_data["dist_hold_frames"] = 0
             active_cycle_data["rect_variant"] = None
             active_cycle_data["rect_no_variant_frames"] = 0
             active_cycle_data["orb_override_key"] = None

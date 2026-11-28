@@ -1860,7 +1860,8 @@
                     }
                 };
 
-                if (isGaugePart && distData && distData.is_valid) {
+                const isWaitingDoor = data.capture_state === 'WAITING_FRONT' || data.instruction === 'WAITING FOR DOOR' || (data.status && data.status.startsWith('Plate removed'));
+                if (isGaugePart && distData && distData.is_valid && !isWaitingDoor) {
                     if (distSection) distSection.style.display = 'block';
                     if (distDefectRow) distDefectRow.style.display = 'flex';
                     if (distTitleEl) {
@@ -1893,6 +1894,13 @@
                 } else {
                     if (distSection) distSection.style.display = 'none';
                     if (distDefectRow) distDefectRow.style.display = 'none';
+                    if (distValEl) distValEl.textContent = '--.-- mm';
+                    if (distDevEl) distDevEl.textContent = '--.-- mm';
+                    if (distBadgeEl) {
+                        distBadgeEl.textContent = 'INACTIVE';
+                        distBadgeEl.style.background = '#e2e8f0';
+                        distBadgeEl.style.color = '#475569';
+                    }
                 }
 
                 updateDefectStatus(dentEl, hasDent);

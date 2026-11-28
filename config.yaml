@@ -1,7 +1,7 @@
 ai:
   class_confidences:
     # --- Panel classes ---
-    back: 0.25
+    back: 0.60
     circle_back: 0.40
     cricle_back: 0.40      # model class ID typo in model
     circle_front: 0.80
@@ -47,6 +47,10 @@ ai:
     rectangle: "SSP_SU2I_BN7I_FuelDoor_model.pt"
   ocr_confidence_threshold: 0.1
   ocr_fallback_timeout: 3.5
+  gauge:
+    history_window: 7
+    deadband_mm: 0.05
+    smoothing_factor: 0.35
   part_presence:
     blue_thresh: 0.75
     laplacian_variance_min: 150.0

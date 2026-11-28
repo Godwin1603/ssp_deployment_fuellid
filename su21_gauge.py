@@ -349,11 +349,50 @@ class SU21DistanceGauge:
         kp, des = self.orb.detectAndCompute(gray, None)
         return orig_w, orig_h, need_resize, scaled_frame, gray, kp, des
 
-    def measure(self, frame, plug_box=None, plug_class=None, precomputed=None):
+    def _locate_shifted(self, gray, key, dx=0, dy=0, margin=180):
+        """Locates template around taught ROI shifted by (dx, dy) with search margin."""
+        rx, ry, rw, rh = self.cfg[f"roi_{key}"]
+        return self._match_template(
+            gray,
+            self.tmpl[key],
+            [rx + dx, ry + dy, rw, rh],
+            self.cfg[f"offset_{key}"],
+            margin=margin,
+        )
+
+    def _locate_A_shifted(self, gray, dx=0, dy=0, margin=180, guided_box=None):
+        """Locates catch plug across Template A variants shifted by (dx, dy)."""
+        best_pass = None
+        best_any = None
+        for var in self.tmpl_A_variants:
+            rx, ry, rw, rh = var["roi"]
+            min_sc = var["min_score"]
+            pt, score = self._match_template(
+                gray,
+                var["tmpl"],
+                [rx + dx, ry + dy, rw, rh],
+                var["offset"],
+                margin=margin,
+                guided_box=guided_box,
+                min_score=min_sc,
+            )
+            if pt is None:
+                continue
+            cand = (score, pt, var["name"], min_sc)
+            if best_any is None or score > best_any[0]:
+                best_any = cand
+            if score >= min_sc and (best_pass is None or score > best_pass[0]):
+                best_pass = cand
+        chosen = best_pass or best_any
+        if chosen is None:
+            return None, 0.0, "normal", self.min_match_score
+        return chosen[1], float(chosen[0]), chosen[2], float(chosen[3])
+
+    def measure(self, frame, plug_box=None, plug_class=None, precomputed=None, back_box=None):
         """
         Runs full alignment, feature location, and distance calculation on a camera frame.
         Supports straight, bend-down, and bend-up catch plugs via multi-template A matching
-        and optional YOLO Catch_plug / catchplug_bend guidance, while keeping Template B fixed
+        and optional YOLO Catch_plug / catchplug_bend / back_box guidance, while keeping Template B fixed
         on the aligned part.
         """
         if frame is None:
@@ -376,6 +415,30 @@ class SU21DistanceGauge:
                 scaled_plug_box = (plug_box[0] * sx, plug_box[1] * sy, plug_box[2] * sx, plug_box[3] * sy)
             else:
                 scaled_plug_box = plug_box
+
+        scaled_back_box = None
+        if back_box is not None:
+            if need_resize:
+                sx = self.w / float(orig_w)
+                sy = self.h / float(orig_h)
+                scaled_back_box = (back_box[0] * sx, back_box[1] * sy, back_box[2] * sx, back_box[3] * sy)
+            else:
+                scaled_back_box = back_box
+
+        # If whole-frame ORB alignment failed, retry ORB masked strictly to YOLO back_box
+        if H is None and scaled_back_box is not None:
+            bx1, by1, bx2, by2 = scaled_back_box
+            b_mask = np.zeros_like(gray)
+            mx1 = max(int(bx1 - 40), 0)
+            my1 = max(int(by1 - 40), 0)
+            mx2 = min(int(bx2 + 40), self.w)
+            my2 = min(int(by2 + 40), self.h)
+            if mx2 > mx1 and my2 > my1:
+                b_mask[my1:my2, mx1:mx2] = 255
+                kp_b, des_b = self.orb.detectAndCompute(gray, b_mask)
+                H_b, inl_b = self._match_homography(kp_b, des_b)
+                if H_b is not None:
+                    H, inl = H_b, inl_b
 
         # If aligned frame is available, measure on warped frame
         if H is not None:
@@ -447,15 +510,25 @@ class SU21DistanceGauge:
                         "is_valid": True
                     }
 
-        # Level 3: Direct Fixture Dynamic Recovery
-        # When ORB feature alignment fails due to lighting or texture, search directly in the guided fixture tray
-        pa_dir, sa_dir, var_dir, thresh_dir = self.locate_A(gray, margin=180, guided_box=scaled_plug_box)
+        # Level 3: Direct Fixture Dynamic Recovery (shifted by back_box translation when available)
+        # When ORB feature alignment fails due to lighting or texture, search directly around the moved part
+        dx = dy = 0
+        if scaled_back_box is not None and "part_roi" in self.cfg:
+            prx, pry, prw, prh = self.cfg["part_roi"]
+            ref_cx, ref_cy = prx + prw * 0.5, pry + prh * 0.5
+            box_cx = (scaled_back_box[0] + scaled_back_box[2]) * 0.5
+            box_cy = (scaled_back_box[1] + scaled_back_box[3]) * 0.5
+            dx = int(round(box_cx - ref_cx))
+            dy = int(round(box_cy - ref_cy))
+
+        l3_margin = 240 if scaled_back_box is not None else 180
+        pa_dir, sa_dir, var_dir, thresh_dir = self._locate_A_shifted(gray, dx=dx, dy=dy, margin=l3_margin, guided_box=scaled_plug_box)
         if (pa_dir is None or sa_dir < thresh_dir) and scaled_plug_box is not None:
             pa_dir = self._plug_box_to_point(scaled_plug_box, plug_class)
             sa_dir = 0.85
             thresh_dir = 0.60
             var_dir = f"yolo_{plug_class or 'catch_plug'}"
-        pb_dir, sb_dir = self.locate(gray, "B", margin=180)
+        pb_dir, sb_dir = self._locate_shifted(gray, "B", dx=dx, dy=dy, margin=l3_margin)
         # When ORB alignment failed, only trust Level 3 if YOLO confirmed the catch plug
         # or both template matches are high-confidence (prevents false NG on rims/hands/front hinges).
         level3_confirmed = (scaled_plug_box is not None) or (sa_dir >= 0.72 and sb_dir >= 0.70)
@@ -690,9 +763,9 @@ class RectangleDistanceGauge:
         candidates = rect_candidates if rect_candidates else list(self.gauges.values())
         return self._select_best_by_inliers(frame, candidates)
 
-    def measure(self, frame, plug_box=None, plug_class=None, variant_hint=None):
+    def measure(self, frame, plug_box=None, plug_class=None, variant_hint=None, back_box=None):
         gauge, precomputed = self._select_gauge(frame, variant_hint=variant_hint)
-        return gauge.measure(frame, plug_box=plug_box, plug_class=plug_class, precomputed=precomputed)
+        return gauge.measure(frame, plug_box=plug_box, plug_class=plug_class, precomputed=precomputed, back_box=back_box)
 
     @staticmethod
     def draw_overlay(img, result, scale=1.0):
