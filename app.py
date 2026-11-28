@@ -167,35 +167,55 @@ PART_MODELS = {
         "display_name": "CIRCLE"
     },
     "POLYGEN": {
-        "path": APP_CONFIG.get("ai", {}).get("models", {}).get("polygen", "SSP_Polygen_Model_FuelDoor.pt"),
+        "path": APP_CONFIG.get("ai", {}).get("models", {}).get("polygen", "SSP_polygen_model.pt"),
         "model": None,
         "front_classes": ["polygen_front", "polygon_front"],
         "back_classes": ["polygen_back", "polygon_back"],
         "display_name": "POLYGON"
     },
     "RECTANGLE": {
-        "path": APP_CONFIG.get("ai", {}).get("models", {}).get("rectangle", "SSP_Rectangle_Model_FuelDoor.pt"),
+        "path": APP_CONFIG.get("ai", {}).get("models", {}).get("rectangle", "SSP_SU2I_BN7I_FuelDoor_model.pt"),
         "model": None,
         "front_classes": ["front"],
         "back_classes": ["back"],
         "display_name": "RECTANGLE"
     }
 }
+DEFECT_CLASSES = {
+    "dent", "bulge", "line_mark", "damage", "flange_cut", "forming_damage",
+    "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark",
+    "flange_bend", "catchplug_bend"
+}
+BACK_ONLY_DEFECT_CLASSES = {"leg_bend", "flange_bend", "flange_cut", "catchplug_bend"}
+SUB_FEATURE_CLASSES = {"holes", "serial", "serial_area", "catch_plug", "lwd", "lwb", "su2i", "wide"}
+RECT_BACK_FEATURE_CLASSES = {"back", "serial", "serial_area", "holes", "catch_plug", "catchplug_bend", "lwd", "lwb", "su2i", "wide"}
+
+def format_detection_label(class_name):
+    """Formats a raw lowercase YOLO class name for display on video overlays."""
+    if class_name in {"su2i", "lwd"}:
+        return class_name.upper()
+    return (
+        class_name.replace("cricle", "circle")
+        .replace("polygen", "polygon")
+        .replace("catchplug", "catch_plug")
+        .replace("_", " ")
+        .title()
+    )
 ACTIVE_MODEL_KEY = "AUTO"
-MODEL_PATH = "SSP_Polygen_Model_FuelDoor.pt"
+MODEL_PATH = "SSP_polygen_model.pt"
 YOLO_MODEL = None
 OCR_ENGINE = None
 
 # -------------------------------
-# SU21 Distance Gauge (Rectangle Model Only)
+# SU21 / LWB Distance Gauge (Rectangle Model Only)
 # -------------------------------
 SU21_GAUGE = None
 try:
-    from su21_gauge import SU21DistanceGauge
-    SU21_GAUGE = SU21DistanceGauge()
-    print("SU21 Distance Gauge loaded successfully.")
+    from su21_gauge import RectangleDistanceGauge
+    SU21_GAUGE = RectangleDistanceGauge()
+    print(f"Rectangle Distance Gauge loaded successfully ({list(SU21_GAUGE.gauges.keys())}).")
 except Exception as e:
-    print(f"Failed to load SU21 Distance Gauge: {e}")
+    print(f"Failed to load Rectangle Distance Gauge: {e}")
 
 current_distance_overlay = None
 
@@ -273,8 +293,13 @@ active_cycle_data = {
     "front_type": None,
     "defect_frame_path": None,  # Path to annotated frame saved when first defect is detected on front
     "locked_model_key": None,
+    "rect_variant": None,
+    "rect_no_variant_frames": 0,
     "shape_votes": {},
-    "front_missing_frames": 0
+    "front_missing_frames": 0,
+    "orb_override_key": None,
+    "orb_override_count": 0,
+    "dist_ng_streak": 0
 }
 
 # Global placeholders for decoupled streaming speedup
@@ -289,11 +314,11 @@ def init_models():
     global PART_MODELS, YOLO_MODEL, OCR_ENGINE, SU21_GAUGE
     if SU21_GAUGE is None:
         try:
-            from su21_gauge import SU21DistanceGauge
-            SU21_GAUGE = SU21DistanceGauge()
-            print("SU21 Distance Gauge initialized in init_models.")
+            from su21_gauge import RectangleDistanceGauge
+            SU21_GAUGE = RectangleDistanceGauge()
+            print("Rectangle Distance Gauge initialized in init_models.")
         except Exception as e:
-            print(f"Warning: Could not initialize SU21 Distance Gauge: {e}")
+            print(f"Warning: Could not initialize Rectangle Distance Gauge: {e}")
     for key, pinfo in PART_MODELS.items():
         if pinfo["model"] is None:
             m_path = pinfo["path"]
@@ -315,63 +340,167 @@ def init_models():
         )
     print("All Models Initialized.")
 
-def get_fueldoor_geometry(img):
+_FAST_ORB_LOCK = threading.Lock()
+_FAST_ORB_STATE = None
+
+def _gauge_key_to_model_key(gauge_key):
+    k = str(gauge_key).upper()
+    if k.startswith("CIRCLE"):
+        return "CIRCLE"
+    if k in ("AI3", "POLYGEN", "POLYGON"):
+        return "POLYGEN"
+    return "RECTANGLE"
+
+def _get_fast_orb_state():
+    """Builds and caches downscaled (800px) ORB descriptors for back-panel model identification."""
+    global _FAST_ORB_STATE
+    with _FAST_ORB_LOCK:
+        if _FAST_ORB_STATE is not None:
+            return _FAST_ORB_STATE
+        if SU21_GAUGE is None or not getattr(SU21_GAUGE, "gauges", None):
+            return None
+        target_w = 800
+        orb = cv2.ORB_create(1200)
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+        ref_db = {}
+        for gkey, gauge in SU21_GAUGE.gauges.items():
+            sc = target_w / float(gauge.w)
+            th = int(round(gauge.h * sc))
+            small_gray = cv2.resize(gauge.ref_gray, (target_w, th), interpolation=cv2.INTER_AREA)
+            mask = np.zeros_like(small_gray)
+            rx, ry, rw, rh = gauge.cfg["part_roi"]
+            mask[int(ry * sc):int((ry + rh) * sc), int(rx * sc):int((rx + rw) * sc)] = 255
+            kp, des = orb.detectAndCompute(small_gray, mask)
+            if des is not None and len(kp) > 0:
+                ref_db[gkey] = (_gauge_key_to_model_key(gkey), kp, des)
+        if not ref_db:
+            return None
+        _FAST_ORB_STATE = (target_w, orb, bf, ref_db)
+        return _FAST_ORB_STATE
+
+def _match_back_part_orb(img, min_inliers=16, min_margin=5):
+    """
+    Identifies back-side part model ('CIRCLE', 'POLYGEN', 'RECTANGLE') via fast downscaled ORB matching
+    against calibrated back-panel references. Returns None when frame is front-side or ambiguous.
+    """
+    if img is None:
+        return None
+    state = _get_fast_orb_state()
+    if state is None:
+        return None
+    target_w, orb, bf, ref_db = state
+    h, w = img.shape[:2]
+    if h <= 0 or w <= 0:
+        return None
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    th = max(1, int(round(h * (target_w / float(w)))))
+    small = cv2.resize(gray, (target_w, th), interpolation=cv2.INTER_AREA)
+    small = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(small)
+    with _FAST_ORB_LOCK:
+        kp, des = orb.detectAndCompute(small, None)
+        if des is None or len(kp) < 15:
+            return None
+        by_group = {"CIRCLE": 0, "POLYGEN": 0, "RECTANGLE": 0}
+        for _, (mkey, rkp, rdes) in ref_db.items():
+            good = [
+                m for m, n in (p for p in bf.knnMatch(rdes, des, k=2) if len(p) == 2)
+                if m.distance < 0.85 * n.distance
+            ]
+            if len(good) < 4:
+                continue
+            src = np.float32([kp[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+            dst = np.float32([rkp[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+            M, inl = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=4.0)
+            score = int(inl.sum()) if (M is not None and inl is not None) else 0
+            if score > by_group[mkey]:
+                by_group[mkey] = score
+    best_key = max(by_group, key=by_group.get)
+    best_score = by_group[best_key]
+    other_max = max(v for k, v in by_group.items() if k != best_key)
+    if best_score >= min_inliers and best_score >= other_max + min_margin:
+        return best_key
+    return None
+
+def get_fueldoor_geometry(img, use_orb=True):
     """
     Analyzes physical shape and bounding box of the metal fuel door flap on blue tray.
+    Uses contour geometry for front panels and fast ORB back-panel reference matching when
+    back-side hinge brackets distort the silhouette aspect ratio.
     Returns: (shape, bbox, metal_contour_area)
     where shape in ['CIRCLE', 'POLYGEN', 'RECTANGLE', 'UNKNOWN']
     bbox is (x, y, w, h) in original image coordinates, or None if not found.
     """
     if img is None:
         return 'UNKNOWN', None, 0
-    h, w = img.shape[:2]
+    h0, w0 = img.shape[:2]
+    if h0 <= 0 or w0 <= 0:
+        return 'UNKNOWN', None, 0
+    sc = min(1.0, 640.0 / float(w0))
+    im = cv2.resize(img, (int(round(w0 * sc)), int(round(h0 * sc))), interpolation=cv2.INTER_AREA) if sc < 1.0 else img
+    h, w = im.shape[:2]
     total_area = w * h
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
     # Mask blue foam tray
     blue = cv2.inRange(hsv, (90, 40, 20), (135, 255, 255))
     part = cv2.bitwise_not(blue)
-    part = cv2.morphologyEx(part, cv2.MORPH_OPEN, np.ones((7, 7), np.uint8))
-    part = cv2.morphologyEx(part, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    k5 = np.ones((5, 5), np.uint8)
+    part = cv2.morphologyEx(part, cv2.MORPH_OPEN, k5)
+    part = cv2.morphologyEx(part, cv2.MORPH_CLOSE, k5)
     cnts, _ = cv2.findContours(part, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
         return 'UNKNOWN', None, 0
     c = max(cnts, key=cv2.contourArea)
     if cv2.contourArea(c) < total_area * 0.05:
         return 'UNKNOWN', None, 0
-        
-    # Isolate bright metal flap from dark steel hinge
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    metal = cv2.inRange(gray, 70, 255) & part
-    metal = cv2.morphologyEx(metal, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
+
+    # Isolate metal flap from dark steel hinge (threshold 65 preserves dimly lit rectangle edges)
+    gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+    metal = cv2.inRange(gray, 65, 255) & part
+    metal = cv2.morphologyEx(metal, cv2.MORPH_OPEN, k5)
     mcnts, _ = cv2.findContours(metal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not mcnts:
         return 'UNKNOWN', None, 0
     mc = max(mcnts, key=cv2.contourArea)
-    m_area = cv2.contourArea(mc)
-    if m_area < total_area * 0.03:
+    m_area_s = cv2.contourArea(mc)
+    if m_area_s < total_area * 0.03:
         return 'UNKNOWN', None, 0
-        
-    gx, gy, gw, gh = cv2.boundingRect(mc)
-    
+
+    gx_s, gy_s, gw_s, gh_s = cv2.boundingRect(mc)
+    gx = int(round(gx_s / sc))
+    gy = int(round(gy_s / sc))
+    gw = int(round(gw_s / sc))
+    gh = int(round(gh_s / sc))
+    m_area = m_area_s / (sc * sc)
+
     rect = cv2.minAreaRect(mc)
     (rw, rh) = rect[1]
     dim_max = max(rw, rh)
     dim_min = min(rw, rh) + 1e-5
     aspect = dim_max / dim_min
-    
-    (fcx, fcy), radius = cv2.minEnclosingCircle(mc)
-    circ_cov = m_area / (np.pi * radius * radius + 1e-5)
-    
-    # 1. Circle: Strictly round (aspect <= 1.08 and circular enclosure >= 0.88)
-    if aspect <= 1.08 and circ_cov >= 0.88:
+
+    _, radius = cv2.minEnclosingCircle(mc)
+    circ_cov = m_area_s / (np.pi * radius * radius + 1e-5)
+
+    # 1. Unambiguous Circle Front fast-path (no ORB needed)
+    if aspect <= 1.10 and circ_cov >= 0.85:
+        return 'CIRCLE', (gx, gy, gw, gh), m_area
+
+    # 2. Back-side panels carry a bright hinge bracket that elongates aspect ratio and
+    # makes Circle Back overlap Polygon Front (and Polygon Back overlap Rectangle Front).
+    # Resolve back panels reliably with fast ORB reference matching.
+    if use_orb:
+        orb_shape = _match_back_part_orb(img)
+        if orb_shape is not None:
+            return orb_shape, (gx, gy, gw, gh), m_area
+
+    # 3. Geometric fallback for front panels (and uncalibrated back frames)
+    if aspect <= 1.14 and circ_cov >= 0.75:
         shape = 'CIRCLE'
-    # 2. Rectangle: Elongated shape with aspect >= 1.26
     elif aspect >= 1.26:
         shape = 'RECTANGLE'
-    # 3. Polygon: Intermediate shape
     else:
         shape = 'POLYGEN'
-        
+
     return shape, (gx, gy, gw, gh), m_area
 
 def detect_fueldoor_shape(img):
@@ -681,10 +810,10 @@ def finalize_report_and_rename(c_data):
             if active_cycle_data["serial_number"] == "serial_missing":
                 active_cycle_data["defects_detected"].add("serial_missing")
 
-            # Distance measurement and distance defects are strictly for RECTANGLE models only
+            # Distance measurement and distance defects apply to RECTANGLE (SU21/LWB), POLYGEN (AI3), and CIRCLE
             part_key = str(c_data.get("locked_model_key") or active_cycle_data.get("locked_model_key") or current_cycle.get("part_type") or "").upper()
-            is_rectangle_cycle = (part_key == "RECTANGLE")
-            if not is_rectangle_cycle:
+            is_gauge_cycle = part_key in ("RECTANGLE", "POLYGEN", "POLYGON", "CIRCLE")
+            if not is_gauge_cycle:
                 active_cycle_data["defects_detected"].discard("distance_out_of_spec")
                 active_cycle_data["defects_detected"].discard("distance_ng")
                 c_data["distance_measurement"] = None
@@ -745,8 +874,8 @@ def finalize_report_and_rename(c_data):
         # Path of the report within the temp folder matching the folder_name
         temp_report_path = os.path.join(temp_dir, f"{folder_name}.pdf")
 
-        # Ensure back image has distance overlay if distance measurement was recorded and not yet drawn (Rectangle only)
-        if is_rectangle_cycle and c_data.get("distance_measurement") and c_data["distance_measurement"].get("is_valid") and not c_data.get("distance_overlay_drawn") and SU21_GAUGE is not None:
+        # Ensure back image has distance overlay if distance measurement was recorded and not yet drawn (Rectangle/Polygon)
+        if is_gauge_cycle and c_data.get("distance_measurement") and c_data["distance_measurement"].get("is_valid") and not c_data.get("distance_overlay_drawn") and SU21_GAUGE is not None:
             if back and os.path.exists(back):
                 try:
                     back_img = cv2.imread(back)
@@ -760,9 +889,10 @@ def finalize_report_and_rename(c_data):
         # Create report PDF in a separate process to avoid GIL lag
         import subprocess, json, sys
         dist_meta = None
-        if is_rectangle_cycle and c_data.get("distance_measurement"):
+        if is_gauge_cycle and c_data.get("distance_measurement"):
             dm = c_data["distance_measurement"]
             dist_meta = {
+                "model_name": str(dm.get("model_name", "SU21")),
                 "mm": float(dm["mm"]) if dm.get("mm") is not None else None,
                 "dev": float(dm["dev"]) if dm.get("dev") is not None else None,
                 "status": str(dm.get("status", "")),
@@ -905,8 +1035,13 @@ def reset_cycle_state():
             "distance_overlay_drawn": False,
             "latest_back_frame": None,
             "locked_model_key": None if ACTIVE_MODEL_KEY == "AUTO" else ACTIVE_MODEL_KEY,
+            "rect_variant": None,
+            "rect_no_variant_frames": 0,
             "shape_votes": {},
-            "front_missing_frames": 0
+            "front_missing_frames": 0,
+            "orb_override_key": None,
+            "orb_override_count": 0,
+            "dist_ng_streak": 0
         }
 
 # -------------------------------
@@ -1486,10 +1621,10 @@ def video_processing_loop():
             overlay = None
             for det in dets:
                 class_name = det["class_name"]
-                if class_name in ["line_mark", "dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
+                if class_name in DEFECT_CLASSES:
                     mask_pts = det.get("mask")
                     if mask_pts is not None:
-                        color = (0, 0, 255) if class_name in ["dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"] else (0, 255, 255)
+                        color = (0, 255, 255) if class_name == "line_mark" else (0, 0, 255)
                         pts = np.array(mask_pts, np.int32)
                         pts[:, 0] = (pts[:, 0] * scale_ann).astype(int)
                         pts[:, 1] = (pts[:, 1] * scale_ann).astype(int)
@@ -1522,11 +1657,16 @@ def video_processing_loop():
                     color = (255, 0, 255)
                 elif class_name in ["serial", "serial_area"]:
                     color = (255, 255, 0)
-                elif class_name in ["dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend", "line_mark"]:
+                elif class_name == "catch_plug":
+                    color = (255, 200, 0)
+                elif class_name in ["lwd", "su2i", "wide"]:
+                    color = (255, 140, 0)
+                    text_color = (255, 255, 255)
+                elif class_name in DEFECT_CLASSES:
                     color = (0, 0, 255) # Red box
                     text_color = (255, 255, 255) # White text for defects
 
-                if class_name in ["line_mark", "dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"] and det.get("mask") is not None:
+                if class_name in DEFECT_CLASSES and det.get("mask") is not None:
                     pts = np.array(det["mask"], np.int32)
                     pts[:, 0] = (pts[:, 0] * scale_ann).astype(int)
                     pts[:, 1] = (pts[:, 1] * scale_ann).astype(int)
@@ -1536,7 +1676,7 @@ def video_processing_loop():
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
 
                 # Draw label without confidence percentage (normalize typos like cricle -> circle)
-                label = class_name.replace("cricle", "circle").replace("polygen", "polygon").replace("_", " ").title()
+                label = format_detection_label(class_name)
                 (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 0.45, 1)
                 text_x = x1
                 text_y = max(y1 - 5, text_h + 5)
@@ -1554,10 +1694,24 @@ def video_processing_loop():
                 cv2.rectangle(annotated_frame, (mbx1, mby1 - th - 5), (mbx1 + tw, mby1), (255, 0, 255), -1)
                 cv2.putText(annotated_frame, "MOCK", (mbx1, mby1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.7 * scale_ann, (255, 255, 255), max(1, int(2 * scale_ann)))
 
-            # --- Draw Distance Gauge Overlay on Live UI Feed (Rectangle Back only) ---
+            # --- Draw Distance Gauge Overlay on Live UI Feed (Rectangle, Polygon & Circle Back) ---
             with lock:
-                curr_model = str(current_cycle.get("part_type") or current_cycle.get("locked_part_type") or active_cycle_data.get("locked_model_key") or "").upper()
-                dist_overlay = current_distance_overlay if curr_model == "RECTANGLE" else None
+                raw_part = (
+                    current_cycle.get("locked_part_type")
+                    or active_cycle_data.get("locked_model_key")
+                    or current_cycle.get("part_type")
+                    or ""
+                )
+                curr_model = str(raw_part).upper()
+                if curr_model == "AUTO" and current_distance_overlay and current_distance_overlay.get("is_valid"):
+                    dm_name = str(current_distance_overlay.get("model_name", "")).upper()
+                    if dm_name.startswith("CIRCLE"):
+                        curr_model = "CIRCLE"
+                    elif dm_name == "AI3":
+                        curr_model = "POLYGON"
+                    elif dm_name in ("SU21", "LWB"):
+                        curr_model = "RECTANGLE"
+                dist_overlay = current_distance_overlay if curr_model in ("RECTANGLE", "POLYGEN", "POLYGON", "CIRCLE") else None
             if dist_overlay and dist_overlay.get("is_valid") and SU21_GAUGE is not None:
                 SU21_GAUGE.draw_overlay(annotated_frame, dist_overlay, scale=scale_ann)
 
@@ -1665,10 +1819,12 @@ def yolo_worker_loop():
             
         try:
             # Multi-model selection: respect manual UI selection first, then locked cycle key, then auto-detection
+            detected_shape = None
+            cached_geom = None
             with lock:
                 locked_key = active_cycle_data.get("locked_model_key")
                 manual_key = ACTIVE_MODEL_KEY
-                
+
             if manual_key and manual_key != "AUTO" and manual_key in PART_MODELS and PART_MODELS[manual_key]["model"] is not None:
                 active_model_key = manual_key
                 with lock:
@@ -1677,12 +1833,43 @@ def yolo_worker_loop():
                     current_cycle["part_type"] = manual_key
             elif locked_key and locked_key in PART_MODELS and PART_MODELS[locked_key]["model"] is not None and state != "WAITING_FRONT":
                 active_model_key = locked_key
+                # In WAITING_BACK (AUTO mode) before back is captured, verify with fast back-panel ORB matching
+                # so a Circle/Polygon/Rectangle back is never trapped in the wrong locked model.
+                if state == "WAITING_BACK" and active_cycle_data.get("back_path") is None:
+                    orb_back = _match_back_part_orb(frame_to_process)
+                    with lock:
+                        if orb_back is not None and orb_back != locked_key and orb_back in PART_MODELS and PART_MODELS[orb_back]["model"] is not None:
+                            if active_cycle_data.get("orb_override_key") == orb_back:
+                                active_cycle_data["orb_override_count"] = active_cycle_data.get("orb_override_count", 0) + 1
+                            else:
+                                active_cycle_data["orb_override_key"] = orb_back
+                                active_cycle_data["orb_override_count"] = 1
+                            if active_cycle_data["orb_override_count"] >= 2:
+                                logger.info(f"[Model Auto-Correct] Corrected model from {locked_key} to {orb_back} via back-panel ORB match")
+                                active_model_key = orb_back
+                                active_cycle_data["locked_model_key"] = orb_back
+                                active_cycle_data["front_type"] = "circle" if orb_back == "CIRCLE" else ("polygen" if orb_back == "POLYGEN" else "standard")
+                                active_cycle_data["distance_measurement"] = None
+                                active_cycle_data["rect_variant"] = None
+                                active_cycle_data["rect_no_variant_frames"] = 0
+                                active_cycle_data["back_confirmed_frames"] = 0
+                                active_cycle_data["orb_override_key"] = None
+                                active_cycle_data["orb_override_count"] = 0
+                                current_cycle["locked_part_type"] = "POLYGON" if orb_back == "POLYGEN" else orb_back
+                                current_cycle["part_type"] = "POLYGON" if orb_back == "POLYGEN" else orb_back
+                                current_cycle["gauge_distance"] = None
+                        else:
+                            active_cycle_data["orb_override_key"] = None
+                            active_cycle_data["orb_override_count"] = 0
             else:
                 # In WAITING_FRONT or when searching: dynamically adjust to whatever part they are showing!
-                detected_shape = detect_fueldoor_shape(frame_to_process)
+                cached_geom = get_fueldoor_geometry(frame_to_process, use_orb=True)
+                detected_shape = cached_geom[0]
                 if detected_shape in PART_MODELS and PART_MODELS[detected_shape]["model"] is not None:
                     active_model_key = detected_shape
                     with lock:
+                        votes = active_cycle_data.setdefault("shape_votes", {})
+                        votes[detected_shape] = votes.get(detected_shape, 0) + 1
                         current_cycle["part_type"] = detected_shape
                 elif locked_key and locked_key in PART_MODELS:
                     active_model_key = locked_key
@@ -1712,8 +1899,14 @@ def yolo_worker_loop():
             back_box = None
             front_class = None  # Will be 'front', 'circle_front', or 'polygen_front'
             back_class = None   # Will be 'back', 'circle_back', 'cricle_back', or 'polygen_back'
+            detected_back_panel_class = None  # Strictly set only when YOLO detects the model's panel back class
             front_conf = -1.0
             back_conf = -1.0
+            plug_box = None
+            plug_class = None
+            plug_conf = -1.0
+            rect_variant_frame = None
+            rect_variant_conf = -1.0
             
             # Track sub-feature detections for fallback (circular shapes that don't detect front/back)
             sub_feature_boxes = []  # Collect all non-front/back bounding boxes
@@ -1863,28 +2056,34 @@ def yolo_worker_loop():
                     "back", "circle_back", "cricle_back", "polygen_back", "polygon_back"
                 ]
                 panel_box_area = None
-                
+                frame_has_front = False
+                frame_has_back = False
+
                 for box in boxes:
                     cls_id = int(box.cls[0].cpu().item())
                     class_name = names[cls_id].lower()
                     conf = float(box.conf[0].cpu().item())
-                    
+
                     if conf < CLASS_CONF_THRESHOLDS.get(class_name, YOLO_CONF_THRESHOLD):
                         continue
-                        
+
                     if class_name in ["front", "circle_front", "cricle_front", "polygen_front", "polygon_front"]:
+                        frame_has_front = True
                         xyxy_r = box.xyxy[0].cpu().numpy()
                         bw = (xyxy_r[2] - xyxy_r[0]) / scale
                         bh = (xyxy_r[3] - xyxy_r[1]) / scale
                         panel_box_area = max(panel_box_area or 0, bw * bh)
                     elif class_name in ["back", "circle_back", "cricle_back", "polygen_back", "polygon_back"]:
+                        frame_has_back = True
                         xyxy_r = box.xyxy[0].cpu().numpy()
                         bw = (xyxy_r[2] - xyxy_r[0]) / scale
                         bh = (xyxy_r[3] - xyxy_r[1]) / scale
                         panel_box_area = max(panel_box_area or 0, bw * bh)
+                    elif class_name in ["serial", "serial_area"]:
+                        frame_has_back = True
                 
                 # Determine plate area from YOLO panel box or physical geometry
-                geom_shape, geom_bbox, geom_area = get_fueldoor_geometry(frame_to_process)
+                geom_shape, geom_bbox, geom_area = cached_geom if cached_geom is not None else get_fueldoor_geometry(frame_to_process, use_orb=False)
                 geom_box_area = (geom_bbox[2] * geom_bbox[3]) if geom_bbox else None
                 reference_plate_area = panel_box_area or geom_box_area
 
@@ -1946,7 +2145,7 @@ def yolo_worker_loop():
                     metal_t = presence_cfg.get("metal_min_ratio", 0.15)
                     lap_t = presence_cfg.get("laplacian_variance_min", 150.0)
                     
-                    if class_name not in ["dent", "bulge", "line_mark", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
+                    if class_name not in DEFECT_CLASSES:
                         roi = frame_to_process[y1:y2, x1:x2]
                         if not has_part(roi, blue_t, metal_t, lap_t):
                             logger.info(f"Filtered out empty tray misclassified as '{class_name}' (conf: {conf:.2f})")
@@ -1972,11 +2171,15 @@ def yolo_worker_loop():
                     if class_name in ["front", "circle_front", "cricle_front", "polygen_front", "polygon_front"]: color = (0, 165, 255)
                     elif class_name in ["back", "circle_back", "cricle_back", "polygen_back", "polygon_back"]: color = (255, 0, 255)
                     elif class_name in ["serial", "serial_area"]: color = (255, 255, 0)
-                    elif class_name in ["dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend", "line_mark"]: 
+                    elif class_name == "catch_plug": color = (255, 200, 0)
+                    elif class_name in ["lwd", "su2i", "wide"]:
+                        color = (255, 140, 0)
+                        text_color = (255, 255, 255)
+                    elif class_name in DEFECT_CLASSES: 
                         color = (0, 0, 255) # Red box
                         text_color = (255, 255, 255) # White text for defects
                     
-                    if class_name in ["line_mark", "dent", "bulge", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
+                    if class_name in DEFECT_CLASSES:
                         if mask_polygon is not None:
                             pts = np.array(mask_polygon, np.int32).reshape((-1, 1, 2))
                             overlay = annotated_frame.copy()
@@ -1988,7 +2191,7 @@ def yolo_worker_loop():
                     else:
                         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 3)
                         
-                    label = class_name.replace("cricle", "circle").replace("polygen", "polygon").replace("_", " ").title()
+                    label = format_detection_label(class_name)
                     (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
                     text_x = x1
                     text_y = max(y1 - 10, text_h + 10)
@@ -1996,29 +2199,29 @@ def yolo_worker_loop():
                     cv2.putText(annotated_frame, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
                     
                     # Track sub-features for fallback
-                    if class_name in ["holes", "serial", "serial_area"]:
+                    if class_name in SUB_FEATURE_CLASSES:
                         sub_feature_boxes.append((x1, y1, x2, y2))
                         if class_name in ["serial", "serial_area"]:
                             has_serial_detected = True
                         elif class_name == "holes":
                             has_holes_detected = True
                     
-                    if class_name in ["dent", "bulge", "line_mark", "damage", "flange_cut", "forming_damage", "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark", "flange_bend"]:
-                        if class_name in ["hole_missing", "hole_spec_error"] and not has_back_detected:
+                    if class_name in DEFECT_CLASSES:
+                        if class_name in ["hole_missing", "hole_spec_error"] and not frame_has_back:
                             pass
-                        elif class_name in ["leg_bend", "flange_bend", "flange_cut"] and (has_front_detected and not has_back_detected):
-                            # Hinge legs and flange cuts only exist on the rear bracket
+                        elif class_name in BACK_ONLY_DEFECT_CLASSES and (frame_has_front and not frame_has_back):
+                            # Hinge legs, catch plug, and flange cuts only exist on the rear bracket
                             pass
-                        elif class_name in ["bulge", "dent"] and (has_front_detected and not has_back_detected) and box_area < 800:
+                        elif class_name in ["bulge", "dent"] and (frame_has_front and not frame_has_back) and box_area < 800:
                             # Filter tiny spot-weld and rivet impressions on the front flap (< 800 px)
                             logger.info(f"Filtered out normal front spot-weld/texture misclassified as '{class_name}' (area={box_area})")
                             pass
                         else:
                             frame_defects.append(class_name)
-                        
+
                     if class_name == "holes":
                         # Count holes when back is detected OR in fallback mode (no panel detected)
-                        if has_back_detected or (not has_front_detected and not has_back_detected):
+                        if frame_has_back or (not frame_has_front and not frame_has_back):
                             frame_holes += 1
                     elif class_name in ["front", "circle_front", "cricle_front", "polygen_front", "polygon_front"]:
                         has_front_detected = True
@@ -2031,9 +2234,19 @@ def yolo_worker_loop():
                         if conf > back_conf:
                             back_box = (x1, y1, x2, y2)
                             back_class = class_name  # Track the actual detected back class
+                            detected_back_panel_class = class_name
                             back_conf = conf
                     elif class_name in ["serial", "serial_area"]:
                         has_back_detected = True
+                    elif class_name in ["catch_plug", "catchplug_bend"]:
+                        if conf > plug_conf:
+                            plug_box = (x1, y1, x2, y2)
+                            plug_class = class_name
+                            plug_conf = conf
+                    elif class_name in ["su2i", "lwd", "lwb"]:
+                        if conf > rect_variant_conf:
+                            rect_variant_frame = "LWB" if class_name in ("lwd", "lwb") else "SU21"
+                            rect_variant_conf = conf
                         
                     # Feature: Treat serial or holes as back panel if back panel box is missing
                     if class_name in ["serial", "serial_area", "holes"] and back_class is None:
@@ -2047,46 +2260,119 @@ def yolo_worker_loop():
                         # Do not set back_box to avoid false mismatch triggers on circle vs standard,
                         # but we still mark back_class to indicate the back was conceptually captured.
 
-            # --- SU21 Distance Measurement Gauge (Only for RECTANGLE) ---
-            # Requirement:
-            # Only for rectangle part, not for circle or polygen.
-            # In WAITING_BACK or when back features are present on rectangle:
-            is_rectangle_model = (active_model_key == "RECTANGLE") or (active_cycle_data.get("locked_model_key") == "RECTANGLE") or (active_cycle_data.get("front_type") == "standard")
-            is_back_stage = (state == "WAITING_BACK")
-            is_back_feature_seen = (back_class == "back") or any(d["class_name"] in ["back", "serial", "serial_area", "holes"] for d in new_detections)
+            # --- Distance Measurement Gauge (RECTANGLE: SU21/LWB, POLYGEN: AI3, CIRCLE: CIRCLE) ---
+            # Activate strictly when YOLO detects the active model's dependent back panel class
+            detected_circle = (front_class in ("circle_front", "cricle_front")) or (
+                detected_back_panel_class in PART_MODELS["CIRCLE"]["back_classes"]
+            )
+            detected_poly = (front_class in ("polygen_front", "polygon_front")) or (
+                detected_back_panel_class in PART_MODELS["POLYGEN"]["back_classes"]
+            )
+            detected_rect = (front_class in PART_MODELS["RECTANGLE"]["front_classes"]) or (
+                detected_back_panel_class in PART_MODELS["RECTANGLE"]["back_classes"]
+            )
+            is_circle_model = detected_circle or (
+                (active_model_key == "CIRCLE")
+                or (active_cycle_data.get("locked_model_key") == "CIRCLE")
+                or (active_cycle_data.get("front_type") == "circle")
+            )
+            is_polygen_model = (not is_circle_model) and (
+                detected_poly
+                or (active_model_key == "POLYGEN")
+                or (active_cycle_data.get("locked_model_key") == "POLYGEN")
+                or (active_cycle_data.get("front_type") == "polygen")
+            )
+            is_rectangle_model = (not is_circle_model) and (not is_polygen_model) and (
+                detected_rect
+                or (active_model_key == "RECTANGLE")
+                or (active_cycle_data.get("locked_model_key") == "RECTANGLE")
+                or (active_cycle_data.get("front_type") == "standard")
+            )
+            is_gauge_model = is_rectangle_model or is_polygen_model or is_circle_model
+
+            front_only_visible = (front_box is not None) and (not has_back_detected) and (detected_back_panel_class is None)
+            orb_switching = active_cycle_data.get("orb_override_count", 0) > 0
+            if is_polygen_model:
+                variant_hint = "AI3"
+                should_run_gauge = (
+                    detected_back_panel_class in PART_MODELS["POLYGEN"]["back_classes"]
+                ) and not orb_switching
+            elif is_circle_model:
+                variant_hint = "CIRCLE"
+                should_run_gauge = (
+                    detected_back_panel_class in PART_MODELS["CIRCLE"]["back_classes"]
+                ) and not orb_switching
+            elif is_rectangle_model:
+                if rect_variant_frame is not None:
+                    active_cycle_data["rect_variant"] = rect_variant_frame
+                    active_cycle_data["rect_no_variant_frames"] = 0
+                rect_detected_back = detected_back_panel_class in PART_MODELS["RECTANGLE"]["back_classes"]
+                rect_variant_hint = rect_variant_frame or active_cycle_data.get("rect_variant")
+                if rect_detected_back:
+                    if rect_variant_hint is not None:
+                        variant_hint = rect_variant_hint
+                        should_run_gauge = not orb_switching
+                    else:
+                        # Wait 3 back-detected frames for YOLO 'su2i'/'lwd' detection before ORB fallback
+                        active_cycle_data["rect_no_variant_frames"] = active_cycle_data.get("rect_no_variant_frames", 0) + 1
+                        variant_hint = None
+                        should_run_gauge = (active_cycle_data.get("rect_no_variant_frames", 0) >= 3) and not orb_switching
+                else:
+                    active_cycle_data["rect_no_variant_frames"] = 0
+                    variant_hint = None
+                    should_run_gauge = False
+            else:
+                variant_hint = None
+                should_run_gauge = False
 
             distance_measurement_res = None
-            if is_rectangle_model and (is_back_stage or is_back_feature_seen) and SU21_GAUGE is not None:
+            if is_gauge_model and should_run_gauge and SU21_GAUGE is not None:
                 try:
-                    distance_measurement_res = SU21_GAUGE.measure(frame_to_process)
-                    if distance_measurement_res.get("is_valid"):
-                        if distance_measurement_res["status"] == "NG":
-                            frame_defects.append("distance_out_of_spec")
-                            has_defect_detected = True
-                            # Draw overlay on saved annotated frame and log NG
-                            SU21_GAUGE.draw_overlay(annotated_frame, distance_measurement_res, scale=1.0)
-                            SU21_GAUGE.log_ng(distance_measurement_res, annotated_frame)
+                    distance_measurement_res = SU21_GAUGE.measure(
+                        frame_to_process,
+                        plug_box=plug_box,
+                        plug_class=plug_class,
+                        variant_hint=variant_hint,
+                    )
                 except Exception as g_err:
-                    logger.error(f"[SU21 Gauge] Error during measurement: {g_err}")
+                    logger.error(f"[Distance Gauge] Error during measurement: {g_err}")
 
             with lock:
-                if not is_rectangle_model:
-                    # Explicit safeguard: Never allow distance overlay, gauge data, or defect on Circle/Polygen
+                if not is_gauge_model:
+                    # Clear distance overlay, gauge data, and distance defects if active part is not a gauge model
                     current_distance_overlay = None
                     current_cycle["gauge_distance"] = None
                     active_cycle_data["distance_measurement"] = None
+                    active_cycle_data["dist_ng_streak"] = 0
                     active_cycle_data["defects_detected"].discard("distance_out_of_spec")
                     active_cycle_data["defects_detected"].discard("distance_ng")
                     if "distance_out_of_spec" in frame_defects or "distance_ng" in frame_defects:
                         frame_defects = [d for d in frame_defects if d not in ("distance_out_of_spec", "distance_ng")]
                 else:
                     if distance_measurement_res and distance_measurement_res.get("is_valid"):
-                        current_distance_overlay = distance_measurement_res
-                        current_cycle["gauge_distance"] = distance_measurement_res
-                        active_cycle_data["distance_measurement"] = distance_measurement_res
                         if distance_measurement_res["status"] == "NG":
-                            active_cycle_data["defects_detected"].add("distance_out_of_spec")
+                            active_cycle_data["dist_ng_streak"] = active_cycle_data.get("dist_ng_streak", 0) + 1
+                            if active_cycle_data["dist_ng_streak"] >= 2:
+                                frame_defects.append("distance_out_of_spec")
+                                has_defect_detected = True
+                                active_cycle_data["defects_detected"].add("distance_out_of_spec")
+                                active_cycle_data["distance_measurement"] = distance_measurement_res
+                                current_distance_overlay = distance_measurement_res
+                                current_cycle["gauge_distance"] = distance_measurement_res
+                                try:
+                                    SU21_GAUGE.draw_overlay(annotated_frame, distance_measurement_res, scale=1.0)
+                                    SU21_GAUGE.log_ng(distance_measurement_res, annotated_frame)
+                                except Exception as g_log_err:
+                                    logger.error(f"[Distance Gauge] Error logging NG: {g_log_err}")
+                            else:
+                                # Hold prior confirmed/OK overlay while 1st NG frame awaits confirmation
+                                current_distance_overlay = active_cycle_data.get("distance_measurement") or distance_measurement_res
+                                current_cycle["gauge_distance"] = active_cycle_data.get("distance_measurement")
                         else:
+                            active_cycle_data["dist_ng_streak"] = 0
+                            active_cycle_data["distance_measurement"] = distance_measurement_res
+                            current_distance_overlay = distance_measurement_res
+                            current_cycle["gauge_distance"] = distance_measurement_res
                             active_cycle_data["defects_detected"].discard("distance_out_of_spec")
                             active_cycle_data["defects_detected"].discard("distance_ng")
                     elif active_cycle_data.get("distance_measurement") and active_cycle_data["distance_measurement"].get("is_valid"):
@@ -2217,7 +2503,46 @@ def yolo_worker_loop():
             with lock:
                 current_detections = new_detections
                 needs_reset = False
-                
+
+                # Update defect tracker and back-hole max BEFORE state transitions / finalization
+                if state in ["WAITING_FRONT", "WAITING_BACK", "WAITING_REMOVE"]:
+                    current_cycle["holes_count"] = frame_holes
+                    tracker = active_cycle_data.get("defect_tracker", {})
+                    detected_classes = set(
+                        d for d in frame_defects
+                        if d not in ("out_of_bounds", "distance_out_of_spec", "distance_ng")
+                    )
+
+                    for d in detected_classes:
+                        if d not in tracker:
+                            tracker[d] = {"hit_count": 0, "miss_count": 0, "status": "PENDING"}
+                        else:
+                            tracker[d]["hit_count"] += 1
+                            tracker[d]["miss_count"] = 0
+
+                        if tracker[d]["hit_count"] >= 2:
+                            tracker[d]["status"] = "CONFIRMED"
+                            active_cycle_data["defects_detected"].add(d)
+
+                    to_remove = []
+                    for d, info in tracker.items():
+                        if d not in detected_classes:
+                            info["miss_count"] += 1
+                            if info["status"] == "PENDING" and info["miss_count"] >= 2:
+                                to_remove.append(d)
+                            elif info["status"] == "CONFIRMED" and info["miss_count"] >= 5:
+                                to_remove.append(d)
+                                active_cycle_data["defects_detected"].discard(d)
+
+                    for d in to_remove:
+                        del tracker[d]
+
+                    active_cycle_data["defect_tracker"] = tracker
+                    if active_cycle_data["temp_folder"] is not None or (state == "WAITING_BACK" and back_box is not None):
+                        active_cycle_data["max_holes_detected"] = min(
+                            2, max(active_cycle_data["max_holes_detected"], frame_holes)
+                        )
+
                 # Strict State Machine Logic
                 if state == "WAITING_FRONT":
                     current_cycle["status"] = "Waiting for Front Panel"
@@ -2234,61 +2559,70 @@ def yolo_worker_loop():
                         else:
                             if active_cycle_data["temp_folder"] is None:
                                 today_str = datetime.now().strftime("%Y-%m-%d")
-                            timestamp = datetime.now().strftime("%H%M%S")
-                            temp_path = os.path.join("fuel_door_data", today_str, f"temp_capture_{timestamp}")
-                            os.makedirs(temp_path, exist_ok=True)
-                            active_cycle_data["temp_folder"] = temp_path
+                                timestamp = datetime.now().strftime("%H%M%S")
+                                temp_path = os.path.join("fuel_door_data", today_str, f"temp_capture_{timestamp}")
+                                os.makedirs(temp_path, exist_ok=True)
+                                active_cycle_data["temp_folder"] = temp_path
                             current_cycle["step1_status"] = "OK"
-                            
-                        # Anti-shake distance check
-                        cx = (front_box[0] + front_box[2]) / 2
-                        cy = (front_box[1] + front_box[3]) / 2
-                        prev_cx, prev_cy = active_cycle_data.get("front_box_center") or (cx, cy)
-                        dist = ((cx - prev_cx)**2 + (cy - prev_cy)**2)**0.5
-                        
-                        if dist > 10:
-                            active_cycle_data["front_frames_count"] = 0
-                            active_cycle_data["front_first_seen_time"] = None
-                            
-                        active_cycle_data["front_box_center"] = (cx, cy)
-                        active_cycle_data["front_frames_count"] += 1
-                        
-                        if active_cycle_data.get("front_first_seen_time") is None:
-                            active_cycle_data["front_first_seen_time"] = time.time()
-                            
-                        time_stable = time.time() - active_cycle_data["front_first_seen_time"]
-                        
-                        active_cycle_data["front_missing_frames"] = 0
-                        
-                        if time_stable >= 0.2:
-                            # Save full raw feed image without annotations and without cropping
-                            full_image = frame_to_process.copy()
-                            front_file = os.path.join(active_cycle_data["temp_folder"], "front.jpg")
-                            cv2.imwrite(front_file, full_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                            
-                            active_cycle_data["front_path"] = front_file
-                            # Record which front panel type was seen and lock model
+
+                            # Anti-shake distance check
+                            cx = (front_box[0] + front_box[2]) / 2
+                            cy = (front_box[1] + front_box[3]) / 2
+                            prev_cx, prev_cy = active_cycle_data.get("front_box_center") or (cx, cy)
+                            dist = ((cx - prev_cx)**2 + (cy - prev_cy)**2)**0.5
+
+                            if dist > 10:
+                                active_cycle_data["front_frames_count"] = 0
+                                active_cycle_data["front_first_seen_time"] = None
+
+                            active_cycle_data["front_box_center"] = (cx, cy)
+                            active_cycle_data["front_frames_count"] += 1
+
+                            if active_cycle_data.get("front_first_seen_time") is None:
+                                active_cycle_data["front_first_seen_time"] = time.time()
+
+                            time_stable = time.time() - active_cycle_data["front_first_seen_time"]
+
+                            active_cycle_data["front_missing_frames"] = 0
+
                             if front_class in ["circle_front", "cricle_front"]:
-                                active_cycle_data["front_type"] = "circle"
-                                active_cycle_data["locked_model_key"] = "CIRCLE"
-                                current_cycle["locked_part_type"] = "CIRCLE"
-                                current_cycle["part_type"] = "CIRCLE"
+                                expected_model = "CIRCLE"
                             elif front_class in ["polygen_front", "polygon_front"]:
-                                active_cycle_data["front_type"] = "polygen"
-                                active_cycle_data["locked_model_key"] = "POLYGEN"
-                                current_cycle["locked_part_type"] = "POLYGON"
-                                current_cycle["part_type"] = "POLYGON"
+                                expected_model = "POLYGEN"
                             else:
-                                active_cycle_data["front_type"] = "standard"
-                                active_cycle_data["locked_model_key"] = "RECTANGLE"
-                                current_cycle["locked_part_type"] = "RECTANGLE"
-                                current_cycle["part_type"] = "RECTANGLE"
-                            logger.info(f"[State] Front captured as type='{active_cycle_data['front_type']}' (model='{active_cycle_data['locked_model_key']}')")
-                            current_cycle["step2_status"] = "OK"
-                            active_cycle_data["state"] = "WAITING_BACK"
-                            for d in frame_defects:
-                                if d != "out_of_bounds":
-                                    active_cycle_data["defects_detected"].add(d)
+                                expected_model = "RECTANGLE"
+
+                            if time_stable >= 0.2 and active_cycle_data["front_frames_count"] >= 2:
+                                if ACTIVE_MODEL_KEY == "AUTO" and detected_shape in PART_MODELS and detected_shape != expected_model:
+                                    logger.info(f"[State] Deferring front lock: front_class='{front_class}' ({expected_model}) disagrees with detected shape '{detected_shape}'")
+                                    active_cycle_data["front_frames_count"] = 0
+                                    active_cycle_data["front_first_seen_time"] = None
+                                else:
+                                    # Save full raw feed image without annotations and without cropping
+                                    full_image = frame_to_process.copy()
+                                    front_file = os.path.join(active_cycle_data["temp_folder"], "front.jpg")
+                                    cv2.imwrite(front_file, full_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+                                    active_cycle_data["front_path"] = front_file
+                                    # Record which front panel type was seen and lock model
+                                    if expected_model == "CIRCLE":
+                                        active_cycle_data["front_type"] = "circle"
+                                        active_cycle_data["locked_model_key"] = "CIRCLE"
+                                        current_cycle["locked_part_type"] = "CIRCLE"
+                                        current_cycle["part_type"] = "CIRCLE"
+                                    elif expected_model == "POLYGEN":
+                                        active_cycle_data["front_type"] = "polygen"
+                                        active_cycle_data["locked_model_key"] = "POLYGEN"
+                                        current_cycle["locked_part_type"] = "POLYGON"
+                                        current_cycle["part_type"] = "POLYGON"
+                                    else:
+                                        active_cycle_data["front_type"] = "standard"
+                                        active_cycle_data["locked_model_key"] = "RECTANGLE"
+                                        current_cycle["locked_part_type"] = "RECTANGLE"
+                                        current_cycle["part_type"] = "RECTANGLE"
+                                    logger.info(f"[State] Front captured as type='{active_cycle_data['front_type']}' (model='{active_cycle_data['locked_model_key']}')")
+                                    current_cycle["step2_status"] = "OK"
+                                    active_cycle_data["state"] = "WAITING_BACK"
 
                     else:
                         active_cycle_data["front_missing_frames"] = active_cycle_data.get("front_missing_frames", 0) + 1
@@ -2303,10 +2637,15 @@ def yolo_worker_loop():
                                     except Exception:
                                         pass
                                 active_cycle_data["temp_folder"] = None
-                                active_cycle_data["locked_model_key"] = None
                                 active_cycle_data["shape_votes"] = {}
-                                current_cycle["locked_part_type"] = None
-                                current_cycle["part_type"] = "AUTO"
+                                if ACTIVE_MODEL_KEY == "AUTO":
+                                    active_cycle_data["locked_model_key"] = None
+                                    current_cycle["locked_part_type"] = None
+                                    current_cycle["part_type"] = "AUTO"
+                                else:
+                                    active_cycle_data["locked_model_key"] = ACTIVE_MODEL_KEY
+                                    current_cycle["locked_part_type"] = ACTIVE_MODEL_KEY
+                                    current_cycle["part_type"] = ACTIVE_MODEL_KEY
                                 current_cycle["step1_status"] = "Pending"
                 elif state == "WAITING_BACK":
                     ocr_done = active_cycle_data.get("serial_number") is not None
@@ -2325,17 +2664,22 @@ def yolo_worker_loop():
                         current_cycle["instruction"] = "FLIP TO BACK SIDE"
                         current_cycle["instruction_color"] = "blue"
                     
-                    # DYNAMIC RECOVERY FOR RECTANGLE DISTANCE MEASUREMENT:
-                    # If SU21 gauge obtained a valid distance measurement (or already held one in cycle),
-                    # that is definitive physical proof that the rectangle back panel is sitting on the tray!
-                    dist_valid = bool(is_rectangle_model and (
+                    # DYNAMIC RECOVERY FOR RECTANGLE & POLYGON DISTANCE MEASUREMENT:
+                    # If distance gauge obtained a valid distance measurement (or already held one in cycle),
+                    # that is definitive physical proof that the back panel is sitting on the tray!
+                    dist_valid = bool(is_gauge_model and not front_only_visible and not orb_switching and (
                         (distance_measurement_res and distance_measurement_res.get("is_valid")) or 
                         (active_cycle_data.get("distance_measurement") and active_cycle_data["distance_measurement"].get("is_valid"))
                     ))
 
                     if dist_valid:
                         has_back_detected = True
-                        back_class = "back"
+                        if is_polygen_model:
+                            back_class = "polygen_back"
+                        elif is_circle_model:
+                            back_class = "circle_back"
+                        else:
+                            back_class = "back"
                         front_box = None
                         has_front_detected = False
 
@@ -2382,10 +2726,10 @@ def yolo_worker_loop():
                             # Comprehensive timeout: either OCR timer elapsed or back visible for > 3.5s
                             ocr_timeout = ((ocr_start is not None) and (time.time() - ocr_start > OCR_FALLBACK_TIMEOUT)) or \
                                           ((back_seen_time is not None) and (time.time() - back_seen_time > (OCR_FALLBACK_TIMEOUT + 0.5)))
-                            back_confirmed = (active_cycle_data["back_confirmed_frames"] >= 2) or dist_valid
+                            back_confirmed = (active_cycle_data["back_confirmed_frames"] >= 2)
                             
                             # Capture back once we have either:
-                            # (a) 2 frames with back visible (or dist_valid dynamic recovery), OR
+                            # (a) 2 frames with back visible, OR
                             # (b) OCR serial confirmed/timed-out
                             if back_confirmed or ocr_done or ocr_timeout:
                                 if active_cycle_data.get("back_path") is None:
@@ -2399,7 +2743,7 @@ def yolo_worker_loop():
                                     # Save best available back frame (prefer current, fallback to stored latest)
                                     full_raw = frame_to_process.copy()
                                     dist_res = distance_measurement_res if (distance_measurement_res and distance_measurement_res.get("is_valid")) else active_cycle_data.get("distance_measurement")
-                                    if is_rectangle_model and dist_res and dist_res.get("is_valid") and SU21_GAUGE is not None:
+                                    if is_gauge_model and dist_res and dist_res.get("is_valid") and SU21_GAUGE is not None:
                                         SU21_GAUGE.draw_overlay(full_raw, dist_res, scale=1.0)
                                         active_cycle_data["distance_overlay_drawn"] = True
                                     back_file = os.path.join(active_cycle_data["temp_folder"], "back.jpg")
@@ -2407,14 +2751,8 @@ def yolo_worker_loop():
                                     active_cycle_data["back_path"] = back_file
                                     logger.info(f"[State] Back captured (confirmed_frames={active_cycle_data['back_confirmed_frames']}, dist_valid={dist_valid}, ocr_done={ocr_done})")
                                 
-                                # Step 3 = OK immediately the moment back is seen / distance recovered
+                                # Step 3 = OK immediately the moment back is confirmed
                                 current_cycle["step3_status"] = "OK"
-                                
-                                for d in frame_defects:
-                                    if d != "out_of_bounds":
-                                        if not is_rectangle_model and d in ("distance_out_of_spec", "distance_ng"):
-                                            continue
-                                        active_cycle_data["defects_detected"].add(d)
                                 
                                 if ocr_done or ocr_timeout:
                                     # OCR finished or timed out — finalize now
@@ -2479,53 +2817,20 @@ def yolo_worker_loop():
                         active_cycle_data["remove_frames_count"] = 0
                         
                 # Update UI data outside state transitions
-                if state in ["WAITING_FRONT", "WAITING_BACK", "WAITING_REMOVE"]:
-                    current_cycle["holes_count"] = frame_holes
-                    # --- Dynamic Defect Tracker & Freezing Engine ---
-                    tracker = active_cycle_data.get("defect_tracker", {})
-                    detected_classes = set(d for d in frame_defects if d != "out_of_bounds")
-                    
-                    for d in detected_classes:
-                        if d not in tracker:
-                            tracker[d] = {"hit_count": 0, "miss_count": 0, "status": "PENDING"}
-                        else:
-                            tracker[d]["hit_count"] += 1
-                            tracker[d]["miss_count"] = 0
-                        
-                        if tracker[d]["hit_count"] >= 2:
-                            tracker[d]["status"] = "CONFIRMED"
-                            active_cycle_data["defects_detected"].add(d)
-
-                    to_remove = []
-                    for d, info in tracker.items():
-                        if d not in detected_classes:
-                            info["miss_count"] += 1
-                            if info["status"] == "PENDING" and info["miss_count"] >= 2:
-                                to_remove.append(d)
-                            elif info["status"] == "CONFIRMED" and info["miss_count"] >= 5:
-                                to_remove.append(d)
-                                active_cycle_data["defects_detected"].discard(d)
-                    
-                    for d in to_remove:
-                        del tracker[d]
-                    
-                    active_cycle_data["defect_tracker"] = tracker
-                    # ------------------------------------------------
-
+                cur_state = active_cycle_data["state"]
+                if cur_state in ["WAITING_FRONT", "WAITING_BACK", "WAITING_REMOVE"]:
                     current_defects = list(active_cycle_data["defects_detected"])
                     if "out_of_bounds" in frame_defects:
                         current_defects.append("out_of_bounds")
                     current_cycle["defects"] = current_defects
                     
                     # Defect result assignment: only finalize to NG in WAITING_REMOVE or completion
-                    if active_cycle_data["defects_detected"] and state == "WAITING_REMOVE":
+                    if active_cycle_data["defects_detected"] and cur_state == "WAITING_REMOVE":
                         current_cycle["instruction_color"] = "red"
                         current_cycle["result"] = "NG"
-                    elif state != "WAITING_REMOVE" and not current_cycle["status"].startswith("Finished Cycle"):
+                    elif cur_state != "WAITING_REMOVE" and not current_cycle["status"].startswith("Finished Cycle"):
                         if current_cycle["result"] == "NG":
                             current_cycle["result"] = "Awaiting analysis..."
-                    if active_cycle_data["temp_folder"] is not None:
-                        active_cycle_data["max_holes_detected"] = min(2, max(active_cycle_data["max_holes_detected"], frame_holes))
             if needs_reset:
                 reset_cycle_state()
                 
@@ -2755,19 +3060,29 @@ def status():
 
 @app.route('/api/set_model', methods=['POST'])
 def set_model():
-    global ACTIVE_MODEL_KEY
+    global ACTIVE_MODEL_KEY, current_distance_overlay
     data = request.get_json() or {}
     mode = data.get("model", "AUTO").upper()
     if mode in ["AUTO", "CIRCLE", "POLYGEN", "RECTANGLE"]:
         ACTIVE_MODEL_KEY = mode
         with lock:
+            current_distance_overlay = None
+            current_cycle["gauge_distance"] = None
+            active_cycle_data["distance_measurement"] = None
+            active_cycle_data["dist_ng_streak"] = 0
+            active_cycle_data["rect_variant"] = None
+            active_cycle_data["rect_no_variant_frames"] = 0
+            active_cycle_data["orb_override_key"] = None
+            active_cycle_data["orb_override_count"] = 0
             if mode == "AUTO":
                 active_cycle_data["locked_model_key"] = None
+                active_cycle_data["front_type"] = None
                 active_cycle_data["shape_votes"] = {}
                 current_cycle["locked_part_type"] = None
                 current_cycle["part_type"] = "AUTO"
             else:
                 active_cycle_data["locked_model_key"] = mode
+                active_cycle_data["front_type"] = "circle" if mode == "CIRCLE" else ("polygen" if mode == "POLYGEN" else "standard")
                 current_cycle["locked_part_type"] = mode
                 current_cycle["part_type"] = mode
         logger.info(f"[Model Switch] ACTIVE_MODEL_KEY set to {mode}")

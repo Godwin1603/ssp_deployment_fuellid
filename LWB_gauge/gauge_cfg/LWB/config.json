@@ -1,0 +1,70 @@
+{
+  "model": "LWB",
+  "part_roi": [
+    40,
+    350,
+    2295,
+    1695
+  ],
+  "roi_A": [
+    100,
+    880,
+    340,
+    480
+  ],
+  "roi_B": [
+    1372,
+    974,
+    380,
+    480
+  ],
+  "offset_A": [
+    123.0,
+    152.5
+  ],
+  "offset_B": [
+    70.0,
+    120.0
+  ],
+  "golden_px": 1274.0,
+  "mm_per_px": 0.11819387755102041,
+  "nominal_mm": 150.579,
+  "tolerance_mm": 1.0,
+  "axis": "x",
+  "fixed_pt_B": [
+    1562.0,
+    1214.0
+  ],
+  "extra_templates_A": [
+    {
+      "name": "bend_down",
+      "file": "template_A_bend_down.png",
+      "roi": [
+        40,
+        910,
+        480,
+        420
+      ],
+      "offset": [
+        280.0,
+        171.5
+      ],
+      "min_score": 0.55
+    },
+    {
+      "name": "bend_up",
+      "file": "template_A_bend_up.png",
+      "roi": [
+        0,
+        915,
+        400,
+        410
+      ],
+      "offset": [
+        20.0,
+        166.0
+      ],
+      "min_score": 0.5
+    }
+  ]
+}

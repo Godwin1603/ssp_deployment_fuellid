@@ -25,6 +25,13 @@ ai:
     leg_bend: 0.55
     line_mark: 0.55
     scrap_mark: 0.10
+    catchplug_bend: 0.45
+    # --- Rectangle SU2I/BN7I Gauge features ---
+    catch_plug: 0.35
+    lwd: 0.35
+    lwb: 0.35
+    su2i: 0.35
+    wide: 0.35
     # --- OCR classes ---
     serial: 0.10
     serial_area: 0.10
@@ -35,8 +42,8 @@ ai:
   defect_merge_distance: 50
   models:
     circle: "SSP_cricle_model_fueldoor.pt"
-    polygen: "SSP_Polygen_Model_FuelDoor.pt"
-    rectangle: "SSP_Rectangle_Model_FuelDoor.pt"
+    polygen: "SSP_polygen_model.pt"
+    rectangle: "SSP_SU2I_BN7I_FuelDoor_model.pt"
   ocr_confidence_threshold: 0.1
   ocr_fallback_timeout: 3.5
   part_presence:

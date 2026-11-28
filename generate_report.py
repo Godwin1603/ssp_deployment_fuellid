@@ -322,7 +322,7 @@ def create_inspection_report(
         [Paragraph("<b>Confidence:</b>", cell_style), Paragraph(conf_str, cell_style)],
         [Paragraph("<b>Inspection Timestamp:</b>", cell_style), Paragraph(f"{date_str} {time_str}", cell_style)]
     ]
-    is_rect_report = bool(model_name and ("RECTANGLE" in model_name.upper() or "SU21" in model_name.upper()))
+    is_rect_report = bool(model_name and ("RECTANGLE" in model_name.upper() or "SU21" in model_name.upper() or "LWB" in model_name.upper() or "POLYGEN" in model_name.upper() or "POLYGON" in model_name.upper() or "AI3" in model_name.upper() or "CIRCLE" in model_name.upper()))
     if is_rect_report and distance_data and distance_data.get("mm") is not None:
         d_val = float(distance_data["mm"])
         d_nom = float(distance_data.get("nominal_mm", 140.769))
@@ -331,7 +331,8 @@ def create_inspection_report(
         d_stat = distance_data.get("status", "OK")
         d_color = "#10b981" if d_stat == "OK" else "#ef4444"
         d_str = f"{d_val:.2f} mm (<font color='{d_color}'><b>{d_stat}</b></font>, Dev: {d_dev:+.2f} mm)"
-        result_details.append([Paragraph("<b>SU21 Distance Gauge:</b>", cell_style), Paragraph(d_str, cell_style)])
+        gauge_lbl = distance_data.get("model_name", "SU21")
+        result_details.append([Paragraph(f"<b>{gauge_lbl} Distance Gauge:</b>", cell_style), Paragraph(d_str, cell_style)])
     
     result_details_table = Table(result_details, colWidths=[140, 183.27])
     result_details_table.setStyle(TableStyle([
@@ -354,7 +355,7 @@ def create_inspection_report(
     
     if defects:
         if not is_rect_report:
-            # Strictly exclude distance defects for Circle and Polygon parts
+            # Strictly exclude distance defects for Circle parts
             defects = [d for d in defects if d not in ("distance_out_of_spec", "distance_ng") and "distance" not in d.lower()]
         if defects:
             defect_str = ", ".join(defects).replace('_', ' ')

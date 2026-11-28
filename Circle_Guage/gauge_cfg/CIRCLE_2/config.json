@@ -1,0 +1,115 @@
+{
+  "model": "CIRCLE",
+  "part_roi": [
+    220,
+    280,
+    2080,
+    1680
+  ],
+  "roi_A": [
+    250,
+    840,
+    450,
+    500
+  ],
+  "roi_B": [
+    1234,
+    830,
+    380,
+    480
+  ],
+  "offset_A": [
+    206.0,
+    166.0
+  ],
+  "offset_B": [
+    70.0,
+    120.0
+  ],
+  "golden_px": 868.0,
+  "mm_per_px": 0.14073732718894008,
+  "nominal_mm": 122.16,
+  "tolerance_mm": 2.0,
+  "axis": "x",
+  "fixed_pt_B": [
+    1424.0,
+    1070.0
+  ],
+  "extra_templates_A": [
+    {
+      "name": "circle_4_ok",
+      "file": "template_A_circle_4_ok.png",
+      "roi": [
+        254,
+        850,
+        460,
+        490
+      ],
+      "offset": [
+        211.0,
+        150.0
+      ],
+      "min_score": 0.6
+    },
+    {
+      "name": "bend_down",
+      "file": "template_A_bend_down.png",
+      "roi": [
+        224,
+        870,
+        720,
+        460
+      ],
+      "offset": [
+        500.0,
+        179.0
+      ],
+      "min_score": 0.55
+    },
+    {
+      "name": "bend_down1",
+      "file": "template_A_bend_down1.png",
+      "roi": [
+        234,
+        890,
+        600,
+        420
+      ],
+      "offset": [
+        362.0,
+        158.0
+      ],
+      "min_score": 0.55
+    },
+    {
+      "name": "circle_4_bend_up",
+      "file": "template_A_circle_4_bend_up.png",
+      "roi": [
+        134,
+        880,
+        440,
+        430
+      ],
+      "offset": [
+        22.0,
+        161.0
+      ],
+      "min_score": 0.5
+    },
+    {
+      "name": "circle_5_bend_up",
+      "file": "template_A_circle_5_bend_up.png",
+      "roi": [
+        44,
+        880,
+        500,
+        420
+      ],
+      "offset": [
+        25.0,
+        156.0
+      ],
+      "min_score": 0.5
+    }
+  ]
+}

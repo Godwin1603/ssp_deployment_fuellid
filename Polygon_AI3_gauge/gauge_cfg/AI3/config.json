@@ -1,0 +1,70 @@
+{
+  "model": "AI3",
+  "part_roi": [
+    120,
+    275,
+    2255,
+    1665
+  ],
+  "roi_A": [
+    320,
+    820,
+    480,
+    520
+  ],
+  "roi_B": [
+    1389,
+    1041,
+    337,
+    357
+  ],
+  "offset_A": [
+    222.0,
+    169.0
+  ],
+  "offset_B": [
+    36.6,
+    74.4
+  ],
+  "golden_px": 910.8706384553187,
+  "mm_per_px": 0.12199536938466253,
+  "nominal_mm": 111.122,
+  "tolerance_mm": 1.0,
+  "axis": "xy",
+  "fixed_pt_B": [
+    1525.6,
+    1215.4
+  ],
+  "extra_templates_A": [
+    {
+      "name": "bend_down",
+      "file": "template_A_bend_down.png",
+      "roi": [
+        300,
+        850,
+        620,
+        440
+      ],
+      "offset": [
+        395.0,
+        165.0
+      ],
+      "min_score": 0.55
+    },
+    {
+      "name": "bend_up",
+      "file": "template_A_bend_up.png",
+      "roi": [
+        160,
+        860,
+        440,
+        420
+      ],
+      "offset": [
+        38.0,
+        157.0
+      ],
+      "min_score": 0.5
+    }
+  ]
+}

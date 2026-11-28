@@ -1077,10 +1077,10 @@
                 </div>
             </div>
 
-            <!-- SU21 Distance Gauge (Only for Rectangle Back) -->
+            <!-- Distance Gauge (RECTANGLE: SU21/LWB, POLYGON: AI3, CIRCLE: CIRCLE) -->
             <div class="sidebar-section" id="distance-section" style="transition: border-color 0.3s; display: none;">
                 <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
-                    <span>Distance Gauge (SU21)</span>
+                    <span id="ui-distance-title">Distance Gauge (SU21)</span>
                     <span id="ui-distance-status-badge" style="font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; background: #e2e8f0; color: #475569;">INACTIVE</span>
                 </div>
                 <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px;">
@@ -1090,7 +1090,7 @@
                     </div>
                     <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px;">
                         <span style="color: var(--text-muted); font-weight: 600;">CAD Nominal:</span>
-                        <span style="font-weight: 700; color: var(--text-main);">140.77 ± 1.00 mm</span>
+                        <span id="ui-distance-nominal" style="font-weight: 700; color: var(--text-main);">140.77 ± 1.00 mm</span>
                     </div>
                     <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px;">
                         <span style="color: var(--text-muted); font-weight: 600;">Deviation:</span>
@@ -1150,6 +1150,10 @@
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                         <span style="color: var(--text-muted); font-size: 18px; font-weight: 700;">Hole Spec Error:</span>
                         <span id="ui-hole-spec-error-status" style="font-weight: 900; font-size: 22px; color: var(--accent-green);">PASS</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span style="color: var(--text-muted); font-size: 18px; font-weight: 700;">Catch Plug Bend:</span>
+                        <span id="ui-catchplug-bend-status" style="font-weight: 900; font-size: 22px; color: var(--accent-green);">PASS</span>
                     </div>
                     <div id="ui-defect-warning" style="display: none; background: rgba(239, 68, 68, 0.1); border: 1px solid var(--accent-red); color: var(--accent-red); padding: 8px; border-radius: 6px; font-weight: 600; text-align: center; font-size: 11px; margin-top: 4px;">
                         No Defects
@@ -1693,7 +1697,7 @@
                         if (lockedType === 'CIRCLE') {
                             partBadge.style.background = '#fef3c7';
                             partBadge.style.color = '#92400e';
-                        } else if (lockedType === 'POLYGEN') {
+                        } else if (lockedType === 'POLYGEN' || lockedType === 'POLYGON') {
                             partBadge.style.background = '#e0e7ff';
                             partBadge.style.color = '#3730a3';
                         } else {
@@ -1715,7 +1719,7 @@
                     if (lockedType === 'CIRCLE') {
                         modelInd.style.background = '#fef3c7';
                         modelInd.style.color = '#92400e';
-                    } else if (lockedType === 'POLYGEN') {
+                    } else if (lockedType === 'POLYGEN' || lockedType === 'POLYGON') {
                         modelInd.style.background = '#e0e7ff';
                         modelInd.style.color = '#3730a3';
                     } else if (lockedType === 'RECTANGLE') {
@@ -1729,8 +1733,9 @@
                 if (modelFile) {
                     const modelFiles = {
                         'CIRCLE': 'SSP_cricle_model_fueldoor.pt',
-                        'POLYGEN': 'SSP_Polygen_Model_FuelDoor.pt',
-                        'RECTANGLE': 'SSP_Rectangle_Model_FuelDoor.pt'
+                        'POLYGEN': 'SSP_polygen_model.pt',
+                        'POLYGON': 'SSP_polygen_model.pt',
+                        'RECTANGLE': 'SSP_SU2I_BN7I_FuelDoor_model.pt'
                     };
                     modelFile.textContent = lockedType ? (modelFiles[lockedType] || lockedType) : 'Auto-detecting...';
                 }
@@ -1806,7 +1811,10 @@
                 const scrapMarkEl = document.getElementById('ui-scrap-mark-status');
                 const legBendEl = document.getElementById('ui-leg-bend-status');
                 const holeSpecErrorEl = document.getElementById('ui-hole-spec-error-status');
+                const catchPlugBendEl = document.getElementById('ui-catchplug-bend-status');
                 const distSection = document.getElementById('distance-section');
+                const distTitleEl = document.getElementById('ui-distance-title');
+                const distNomEl = document.getElementById('ui-distance-nominal');
                 const distValEl = document.getElementById('ui-distance-val');
                 const distDevEl = document.getElementById('ui-distance-dev');
                 const distBadgeEl = document.getElementById('ui-distance-status-badge');
@@ -1823,17 +1831,38 @@
                 const hasScrapMark = data.defects && data.defects.includes('scrap_mark');
                 const hasLegBend = data.defects && data.defects.includes('leg_bend');
                 const hasHoleSpecError = data.defects && data.defects.includes('hole_spec_error');
+                const hasCatchPlugBend = data.defects && data.defects.includes('catchplug_bend');
                 const hasOutOfBounds = data.defects && data.defects.includes('out_of_bounds');
-                const isNonRectangle = (data.part_type === 'CIRCLE' || data.locked_part_type === 'CIRCLE' ||
-                                        data.part_type === 'POLYGEN' || data.locked_part_type === 'POLYGEN' ||
-                                        data.part_type === 'POLYGON' || data.locked_part_type === 'POLYGON');
-                const isRectanglePart = !isNonRectangle && (data.part_type === 'RECTANGLE' || data.locked_part_type === 'RECTANGLE');
-                const hasDistanceNG = isRectanglePart && data.defects && (data.defects.includes('distance_out_of_spec') || data.defects.includes('distance_ng'));
-                const distData = isRectanglePart ? data.gauge_distance : null;
+                const isGaugePart = (
+                    data.part_type === 'RECTANGLE' || data.locked_part_type === 'RECTANGLE' ||
+                    data.part_type === 'POLYGEN' || data.locked_part_type === 'POLYGEN' ||
+                    data.part_type === 'POLYGON' || data.locked_part_type === 'POLYGON' ||
+                    data.part_type === 'CIRCLE' || data.locked_part_type === 'CIRCLE'
+                );
+                const hasDistanceNG = isGaugePart && data.defects && (data.defects.includes('distance_out_of_spec') || data.defects.includes('distance_ng'));
+                const distData = isGaugePart ? data.gauge_distance : null;
 
-                if (isRectanglePart && distData && distData.is_valid) {
+                const updateDefectStatus = (el, hasDefect) => {
+                    if (el) {
+                        if (hasDefect) {
+                            el.textContent = 'FAIL';
+                            el.style.color = 'var(--accent-red)';
+                        } else {
+                            el.textContent = 'PASS';
+                            el.style.color = 'var(--accent-green)';
+                        }
+                    }
+                };
+
+                if (isGaugePart && distData && distData.is_valid) {
                     if (distSection) distSection.style.display = 'block';
                     if (distDefectRow) distDefectRow.style.display = 'flex';
+                    if (distTitleEl) {
+                        distTitleEl.textContent = 'Distance Gauge (' + (distData.model_name || 'SU21') + ')';
+                    }
+                    if (distNomEl && distData.nominal_mm !== undefined && distData.tolerance_mm !== undefined) {
+                        distNomEl.textContent = Number(distData.nominal_mm).toFixed(2) + ' ± ' + Number(distData.tolerance_mm).toFixed(2) + ' mm';
+                    }
                     if (distValEl && distData.mm !== null && distData.mm !== undefined) {
                         distValEl.textContent = distData.mm.toFixed(2) + ' mm';
                     }
@@ -1859,18 +1888,6 @@
                     if (distSection) distSection.style.display = 'none';
                     if (distDefectRow) distDefectRow.style.display = 'none';
                 }
-                
-                const updateDefectStatus = (el, hasDefect) => {
-                    if (el) {
-                        if (hasDefect) {
-                            el.textContent = 'FAIL';
-                            el.style.color = 'var(--accent-red)';
-                        } else {
-                            el.textContent = 'PASS';
-                            el.style.color = 'var(--accent-green)';
-                        }
-                    }
-                };
 
                 updateDefectStatus(dentEl, hasDent);
                 updateDefectStatus(bulgeEl, hasBulge);
@@ -1882,6 +1899,7 @@
                 updateDefectStatus(scrapMarkEl, hasScrapMark);
                 updateDefectStatus(legBendEl, hasLegBend);
                 updateDefectStatus(holeSpecErrorEl, hasHoleSpecError);
+                updateDefectStatus(catchPlugBendEl, hasCatchPlugBend);
                 
                 let warningMessages = [];
                 if (hasDent) warningMessages.push("DENT DETECTED");
@@ -1894,7 +1912,8 @@
                 if (hasScrapMark) warningMessages.push("SCRAP MARK DETECTED");
                 if (hasLegBend) warningMessages.push("LEG BEND DETECTED");
                 if (hasHoleSpecError) warningMessages.push("HOLE SPEC ERROR");
-                if (isRectanglePart && hasDistanceNG) warningMessages.push("DISTANCE OUT OF SPEC");
+                if (hasCatchPlugBend) warningMessages.push("CATCH PLUG BEND DETECTED");
+                if (isGaugePart && hasDistanceNG) warningMessages.push("DISTANCE OUT OF SPEC");
                 if (holesMissing) {
                     warningMessages.push("HOLES MISSING");
                 }
@@ -2043,7 +2062,8 @@
                         { flag: hasFormingDamage,key: 'forming_damage',speech: 'Forming damage is detected' },
                         { flag: hasScrapMark, key: 'scrap_mark', speech: 'Scrap mark is detected' },
                         { flag: hasLegBend,   key: 'leg_bend',   speech: 'Leg bend is detected' },
-                        { flag: hasHoleSpecError, key: 'hole_spec_error', speech: 'Hole spec error is detected' }
+                        { flag: hasHoleSpecError, key: 'hole_spec_error', speech: 'Hole spec error is detected' },
+                        { flag: hasCatchPlugBend, key: 'catchplug_bend', speech: 'Catch plug bend is detected' }
                     ];
                     for (const item of defectAnnouncements) {
                         if (item.flag && !_announcedDefects.has(item.key)) {
