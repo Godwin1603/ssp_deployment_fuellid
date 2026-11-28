@@ -26,6 +26,7 @@ ai:
     line_mark: 0.55
     scrap_mark: 0.10
     catchplug_bend: 0.45
+    catchplug_wide: 0.45
     # --- Rectangle SU2I/BN7I Gauge features ---
     catch_plug: 0.35
     lwd: 0.35
@@ -41,7 +42,7 @@ ai:
   max_defect_plate_ratio: 0.50
   defect_merge_distance: 50
   models:
-    circle: "SSP_cricle_model_fueldoor.pt"
+    circle: "SSP_Circle_4D_5D_model.pt"
     polygen: "SSP_polygen_model.pt"
     rectangle: "SSP_SU2I_BN7I_FuelDoor_model.pt"
   ocr_confidence_threshold: 0.1

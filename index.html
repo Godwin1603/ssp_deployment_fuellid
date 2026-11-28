@@ -1155,6 +1155,10 @@
                         <span style="color: var(--text-muted); font-size: 18px; font-weight: 700;">Catch Plug Bend:</span>
                         <span id="ui-catchplug-bend-status" style="font-weight: 900; font-size: 22px; color: var(--accent-green);">PASS</span>
                     </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span style="color: var(--text-muted); font-size: 18px; font-weight: 700;">Catch Plug Wide:</span>
+                        <span id="ui-catchplug-wide-status" style="font-weight: 900; font-size: 22px; color: var(--accent-green);">PASS</span>
+                    </div>
                     <div id="ui-defect-warning" style="display: none; background: rgba(239, 68, 68, 0.1); border: 1px solid var(--accent-red); color: var(--accent-red); padding: 8px; border-radius: 6px; font-weight: 600; text-align: center; font-size: 11px; margin-top: 4px;">
                         No Defects
                     </div>
@@ -1812,6 +1816,7 @@
                 const legBendEl = document.getElementById('ui-leg-bend-status');
                 const holeSpecErrorEl = document.getElementById('ui-hole-spec-error-status');
                 const catchPlugBendEl = document.getElementById('ui-catchplug-bend-status');
+                const catchPlugWideEl = document.getElementById('ui-catchplug-wide-status');
                 const distSection = document.getElementById('distance-section');
                 const distTitleEl = document.getElementById('ui-distance-title');
                 const distNomEl = document.getElementById('ui-distance-nominal');
@@ -1832,6 +1837,7 @@
                 const hasLegBend = data.defects && data.defects.includes('leg_bend');
                 const hasHoleSpecError = data.defects && data.defects.includes('hole_spec_error');
                 const hasCatchPlugBend = data.defects && data.defects.includes('catchplug_bend');
+                const hasCatchPlugWide = data.defects && data.defects.includes('catchplug_wide');
                 const hasOutOfBounds = data.defects && data.defects.includes('out_of_bounds');
                 const isGaugePart = (
                     data.part_type === 'RECTANGLE' || data.locked_part_type === 'RECTANGLE' ||
@@ -1900,6 +1906,7 @@
                 updateDefectStatus(legBendEl, hasLegBend);
                 updateDefectStatus(holeSpecErrorEl, hasHoleSpecError);
                 updateDefectStatus(catchPlugBendEl, hasCatchPlugBend);
+                updateDefectStatus(catchPlugWideEl, hasCatchPlugWide);
                 
                 let warningMessages = [];
                 if (hasDent) warningMessages.push("DENT DETECTED");
@@ -1913,6 +1920,7 @@
                 if (hasLegBend) warningMessages.push("LEG BEND DETECTED");
                 if (hasHoleSpecError) warningMessages.push("HOLE SPEC ERROR");
                 if (hasCatchPlugBend) warningMessages.push("CATCH PLUG BEND DETECTED");
+                if (hasCatchPlugWide) warningMessages.push("CATCH PLUG WIDE DETECTED");
                 if (isGaugePart && hasDistanceNG) warningMessages.push("DISTANCE OUT OF SPEC");
                 if (holesMissing) {
                     warningMessages.push("HOLES MISSING");
@@ -2063,7 +2071,8 @@
                         { flag: hasScrapMark, key: 'scrap_mark', speech: 'Scrap mark is detected' },
                         { flag: hasLegBend,   key: 'leg_bend',   speech: 'Leg bend is detected' },
                         { flag: hasHoleSpecError, key: 'hole_spec_error', speech: 'Hole spec error is detected' },
-                        { flag: hasCatchPlugBend, key: 'catchplug_bend', speech: 'Catch plug bend is detected' }
+                        { flag: hasCatchPlugBend, key: 'catchplug_bend', speech: 'Catch plug bend is detected' },
+                        { flag: hasCatchPlugWide, key: 'catchplug_wide', speech: 'Catch plug wide is detected' }
                     ];
                     for (const item of defectAnnouncements) {
                         if (item.flag && !_announcedDefects.has(item.key)) {

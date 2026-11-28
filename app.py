@@ -160,7 +160,7 @@ app = Flask(__name__, template_folder='.', static_folder='.', static_url_path=''
 # -------------------------------
 PART_MODELS = {
     "CIRCLE": {
-        "path": APP_CONFIG.get("ai", {}).get("models", {}).get("circle", "SSP_cricle_model_fueldoor.pt"),
+        "path": APP_CONFIG.get("ai", {}).get("models", {}).get("circle", "SSP_Circle_4D_5D_model.pt"),
         "model": None,
         "front_classes": ["circle_front", "cricle_front"],
         "back_classes": ["circle_back", "cricle_back"],
@@ -184,11 +184,11 @@ PART_MODELS = {
 DEFECT_CLASSES = {
     "dent", "bulge", "line_mark", "damage", "flange_cut", "forming_damage",
     "hole_missing", "hole_spec_error", "leg_bend", "scrap_mark",
-    "flange_bend", "catchplug_bend"
+    "flange_bend", "catchplug_bend", "catchplug_wide"
 }
-BACK_ONLY_DEFECT_CLASSES = {"leg_bend", "flange_bend", "flange_cut", "catchplug_bend"}
+BACK_ONLY_DEFECT_CLASSES = {"leg_bend", "flange_bend", "flange_cut", "catchplug_bend", "catchplug_wide"}
 SUB_FEATURE_CLASSES = {"holes", "serial", "serial_area", "catch_plug", "lwd", "lwb", "su2i", "wide"}
-RECT_BACK_FEATURE_CLASSES = {"back", "serial", "serial_area", "holes", "catch_plug", "catchplug_bend", "lwd", "lwb", "su2i", "wide"}
+RECT_BACK_FEATURE_CLASSES = {"back", "serial", "serial_area", "holes", "catch_plug", "catchplug_bend", "catchplug_wide", "lwd", "lwb", "su2i", "wide"}
 
 def format_detection_label(class_name):
     """Formats a raw lowercase YOLO class name for display on video overlays."""
@@ -2238,7 +2238,7 @@ def yolo_worker_loop():
                             back_conf = conf
                     elif class_name in ["serial", "serial_area"]:
                         has_back_detected = True
-                    elif class_name in ["catch_plug", "catchplug_bend"]:
+                    elif class_name in ["catch_plug", "catchplug_bend", "catchplug_wide"]:
                         if conf > plug_conf:
                             plug_box = (x1, y1, x2, y2)
                             plug_class = class_name

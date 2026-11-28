@@ -284,11 +284,13 @@ class SU21DistanceGauge:
 
     @staticmethod
     def _plug_box_to_point(plug_box, plug_class=None):
-        """Computes catch plug reference point directly from a YOLO Catch_plug/catchplug_bend box."""
+        """Computes catch plug reference point directly from a YOLO Catch_plug/catchplug_bend/catchplug_wide box."""
         x1, y1, x2, y2 = plug_box
         cy = 0.5 * (y1 + y2)
         if plug_class == "catchplug_bend":
             cx = x1 + 0.845 * (x2 - x1)
+        elif plug_class == "catchplug_wide":
+            cx = x1 + 0.14 * (x2 - x1)
         else:
             cx = x1 + 0.62 * (x2 - x1)
         return (float(cx), float(cy))
