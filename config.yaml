@@ -51,6 +51,9 @@ ai:
     history_window: 7
     deadband_mm: 0.05
     smoothing_factor: 0.35
+    plug_settle_sec: 0.8
+    plug_fail_min_frames: 5
+    plug_fail_min_sec: 1.5
   part_presence:
     blue_thresh: 0.75
     laplacian_variance_min: 150.0

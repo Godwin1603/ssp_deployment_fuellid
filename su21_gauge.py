@@ -102,6 +102,15 @@ class SU21DistanceGauge:
             else:
                 logger.warning(f"[SU21Gauge] Optional Template A variant not found: {extra_path}")
 
+        # Precompute this model's own union catch-plug ROI (never shared across models)
+        all_own_rois = [self.cfg["roi_A"]] + [v["aligned_roi"] for v in self.tmpl_A_variants] + [v["roi"] for v in self.tmpl_A_variants]
+        ux1 = max(0, min(int(r[0]) for r in all_own_rois))
+        uy1 = max(0, min(int(r[1]) for r in all_own_rois))
+        ux2 = min(self.w, max(int(r[0] + r[2]) for r in all_own_rois))
+        uy2 = min(self.h, max(int(r[1] + r[3]) for r in all_own_rois))
+        self.roi_A_union = [ux1, uy1, max(1, ux2 - ux1), max(1, uy2 - uy1)]
+        self.shared_tmpl_A_variants = []
+
         # Fixed reference location for Template B on aligned frames
         rx_b, ry_b, rw_b, rh_b = self.cfg["roi_B"]
         res_b_ref = cv2.matchTemplate(
@@ -128,6 +137,54 @@ class SU21DistanceGauge:
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
 
         logger.info(f"[SU21Gauge] Initialized {self.model_name}: nominal {self.nominal_mm} +/- {self.tolerance_mm} mm (scale={self.mm_per_px:.6f} mm/px)")
+
+    def register_shared_templates_A(self, gauges_dict):
+        """
+        Teaches all other models' Template A catch-plug images + local offsets to this gauge.
+        Strictly preserves this gauge's own roi_A_union, Template B, reference.png, and spec.
+        """
+        import hashlib
+
+        seen_hashes = {hashlib.md5(v["tmpl"].tobytes()).hexdigest() for v in self.tmpl_A_variants}
+        shared = []
+        for key, src_g in gauges_dict.items():
+            if src_g is self:
+                continue
+            ratio = float(src_g.mm_per_px) / float(self.mm_per_px)
+            for var in src_g.tmpl_A_variants:
+                raw_t = var["tmpl"]
+                h = hashlib.md5(raw_t.tobytes()).hexdigest()
+                if h in seen_hashes:
+                    continue
+                seen_hashes.add(h)
+
+                ox, oy = var["offset"]
+                if abs(ratio - 1.0) > 0.03:
+                    nw = max(8, int(round(raw_t.shape[1] * ratio)))
+                    nh = max(8, int(round(raw_t.shape[0] * ratio)))
+                    tmpl_s = cv2.resize(raw_t, (nw, nh), interpolation=cv2.INTER_LINEAR)
+                    off_s = [float(ox) * ratio, float(oy) * ratio]
+                else:
+                    tmpl_s = raw_t
+                    off_s = [float(ox), float(oy)]
+
+                # Only include if the scaled template fits inside this model's own catch-plug ROI
+                ux, uy, uw, uh = self.roi_A_union
+                if tmpl_s.shape[1] > uw + self.search_margin_px or tmpl_s.shape[0] > uh + self.search_margin_px:
+                    continue
+
+                shared.append({
+                    "name": f"shared_{key}_{var['name']}",
+                    "tmpl": tmpl_s,
+                    "tmpl_grad": self._grad_mag(tmpl_s),
+                    "roi": self.roi_A_union,
+                    "aligned_roi": self.roi_A_union,
+                    "offset": off_s,
+                    "min_score": max(float(var.get("min_score", self.min_match_score)), 0.65),
+                })
+
+        self.shared_tmpl_A_variants = shared
+        logger.info(f"[{self.model_name}Gauge] Registered {len(shared)} cross-model Template A variants inside own ROI {self.roi_A_union}")
 
     @staticmethod
     def _grad_mag(gray):
@@ -177,6 +234,7 @@ class SU21DistanceGauge:
         _, score, _, loc = cv2.minMaxLoc(res)
 
         thresh = self.min_match_score if min_score is None else min_score
+        best_sc_factor = 1.0
         # Dynamic recovery: if score is borderline (< thresh), test slight scale variations
         if score < thresh:
             best_score = score
@@ -191,13 +249,14 @@ class SU21DistanceGauge:
                     if s_sc > best_score:
                         best_score = s_sc
                         best_loc = l_sc
+                        best_sc_factor = sc
                         res = r_sc
             score = best_score
             loc = best_loc
 
         px, py = self.subpixel(res, loc)
         ox, oy = offset
-        return (float(sx + px + ox), float(sy + py + oy)), float(score)
+        return (float(sx + px + ox * best_sc_factor), float(sy + py + oy * best_sc_factor)), float(score)
 
     def locate(self, gray, key, margin=None):
         """Locates template within taught ROI + search margin with subpixel refinement and dynamic recovery."""
@@ -209,11 +268,12 @@ class SU21DistanceGauge:
             margin=margin,
         )
 
-    def locate_A(self, gray, margin=None, guided_box=None, aligned=False):
-        """Locates catch plug across normal, bend-down, and bend-up Template A references."""
+    def locate_A(self, gray, margin=None, guided_box=None, aligned=False, variants=None):
+        """Locates catch plug across Template A references (own variants or shared pool)."""
+        pool = self.tmpl_A_variants if variants is None else variants
         best_pass = None  # (score, pt, name, min_score)
         best_any = None   # (score, pt, name, min_score)
-        for var in self.tmpl_A_variants:
+        for var in pool:
             roi = var["aligned_roi"] if aligned else var["roi"]
             var_margin = 0 if (aligned and margin is None) else margin
             min_sc = var["min_score"]
@@ -238,12 +298,13 @@ class SU21DistanceGauge:
             return None, 0.0, "normal", self.min_match_score
         return chosen[1], float(chosen[0]), chosen[2], float(chosen[3])
 
-    def locate_A_gradient(self, work_gray, guided_box=None, margin=25, min_grad_score=0.45):
+    def locate_A_gradient(self, work_gray, guided_box=None, margin=25, min_grad_score=0.45, variants=None):
         """Edge-gradient fallback for reflective/glare catch plugs on ORB-aligned frames."""
+        pool = self.tmpl_A_variants if variants is None else variants
         work_grad = self._grad_mag(work_gray)
         best_pass = None
         best_any = None
-        for var in self.tmpl_A_variants:
+        for var in pool:
             pt, score = self._match_template(
                 work_grad,
                 var["tmpl_grad"],
@@ -360,11 +421,12 @@ class SU21DistanceGauge:
             margin=margin,
         )
 
-    def _locate_A_shifted(self, gray, dx=0, dy=0, margin=180, guided_box=None):
+    def _locate_A_shifted(self, gray, dx=0, dy=0, margin=180, guided_box=None, variants=None):
         """Locates catch plug across Template A variants shifted by (dx, dy)."""
+        pool = self.tmpl_A_variants if variants is None else variants
         best_pass = None
         best_any = None
-        for var in self.tmpl_A_variants:
+        for var in pool:
             rx, ry, rw, rh = var["roi"]
             min_sc = var["min_score"]
             pt, score = self._match_template(
@@ -441,6 +503,7 @@ class SU21DistanceGauge:
                     H, inl = H_b, inl_b
 
         # If aligned frame is available, measure on warped frame
+        fail_reason = "catch_plug_bend" if plug_class in ("catchplug_bend", "catchplug_wide") else "catch_plug_misaligned"
         if H is not None:
             work = cv2.warpPerspective(scaled_frame, H, (self.w, self.h))
             work_gray = self.preprocess(work)
@@ -457,6 +520,20 @@ class SU21DistanceGauge:
                 pa_g, sa_g, var_g, thresh_g = self.locate_A_gradient(work_gray, guided_box=warped_plug_box)
                 if pa_g is not None and sa_g >= thresh_g:
                     pa, sa, var_a, thresh_a = pa_g, sa_g, var_g, thresh_g
+
+            # Cross-model shared Template A fallback (within this gauge's own ROI only)
+            if (pa is None or sa < thresh_a) and self.shared_tmpl_A_variants:
+                pa_sh, sa_sh, var_sh, thresh_sh = self.locate_A(
+                    work_gray, margin=20, guided_box=warped_plug_box, aligned=True, variants=self.shared_tmpl_A_variants
+                )
+                if pa_sh is not None and sa_sh >= thresh_sh:
+                    pa, sa, var_a, thresh_a = pa_sh, sa_sh, var_sh, thresh_sh
+                elif inl >= 10:
+                    pa_sg, sa_sg, var_sg, thresh_sg = self.locate_A_gradient(
+                        work_gray, guided_box=warped_plug_box, margin=20, min_grad_score=0.50, variants=self.shared_tmpl_A_variants
+                    )
+                    if pa_sg is not None and sa_sg >= thresh_sg:
+                        pa, sa, var_a, thresh_a = pa_sg, sa_sg, var_sg, thresh_sg
 
             # YOLO catch plug anchor fallback if all Template A variants scored below threshold
             if (pa is None or sa < thresh_a) and warped_plug_box is not None:
@@ -509,6 +586,11 @@ class SU21DistanceGauge:
                         "pt_b": pt_b,
                         "is_valid": True
                     }
+                else:
+                    fail_reason = "catch_plug_bend"
+            elif inl >= 15 and (pa is None or sa < thresh_a):
+                # Door aligned cleanly via ORB, yet catch plug could not be matched -> bent/deformed
+                fail_reason = "catch_plug_bend"
 
         # Level 3: Direct Fixture Dynamic Recovery (shifted by back_box translation when available)
         # When ORB feature alignment fails due to lighting or texture, search directly around the moved part
@@ -523,6 +605,12 @@ class SU21DistanceGauge:
 
         l3_margin = 240 if scaled_back_box is not None else 180
         pa_dir, sa_dir, var_dir, thresh_dir = self._locate_A_shifted(gray, dx=dx, dy=dy, margin=l3_margin, guided_box=scaled_plug_box)
+        if (pa_dir is None or sa_dir < thresh_dir) and self.shared_tmpl_A_variants:
+            pa_sh, sa_sh, var_sh, thresh_sh = self._locate_A_shifted(
+                gray, dx=dx, dy=dy, margin=l3_margin, guided_box=scaled_plug_box, variants=self.shared_tmpl_A_variants
+            )
+            if pa_sh is not None and sa_sh >= thresh_sh:
+                pa_dir, sa_dir, var_dir, thresh_dir = pa_sh, sa_sh, var_sh, thresh_sh
         if (pa_dir is None or sa_dir < thresh_dir) and scaled_plug_box is not None:
             pa_dir = self._plug_box_to_point(scaled_plug_box, plug_class)
             sa_dir = 0.85
@@ -570,6 +658,7 @@ class SU21DistanceGauge:
         return {
             "model_name": self.model_name,
             "status": "ALIGNMENT FAILED",
+            "fail_reason": fail_reason,
             "mm": None, "dev": None,
             "nominal_mm": self.nominal_mm,
             "tolerance_mm": self.tolerance_mm,
@@ -710,6 +799,10 @@ class RectangleDistanceGauge:
 
         if not self.gauges:
             raise FileNotFoundError("No distance gauge configurations found (SU21, LWB, AI3, or CIRCLE).")
+
+        # Teach all other gauges' Template A catch-plug crops + offsets to each gauge (keeping each gauge's own ROI)
+        for g in self.gauges.values():
+            g.register_shared_templates_A(self.gauges)
 
     @staticmethod
     def _normalize_hint(variant_hint):

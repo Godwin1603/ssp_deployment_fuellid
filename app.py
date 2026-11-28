@@ -304,7 +304,11 @@ active_cycle_data = {
     "stable_dist_mm": None,
     "dist_last_model": None,
     "dist_last_center": None,
-    "dist_hold_frames": 0
+    "dist_hold_frames": 0,
+    "plug_fail_streak": 0,
+    "plug_fail_start_time": None,
+    "plug_fail_reason": None,
+    "plug_fail_last_center": None
 }
 
 # Global placeholders for decoupled streaming speedup
@@ -1009,6 +1013,17 @@ def check_and_finalize_cycle(c_data):
         c_data["processing_thread_active"] = True
         threading.Thread(target=finalize_report_and_rename, args=(c_data,), daemon=True).start()
 
+def _reset_plug_fail_state(c_data, clear_defects=False):
+    """Resets debounced catch-plug failure tracking and optionally clears its alarms."""
+    c_data["plug_fail_streak"] = 0
+    c_data["plug_fail_start_time"] = None
+    c_data["plug_fail_reason"] = None
+    c_data["plug_fail_last_center"] = None
+    if clear_defects and "defects_detected" in c_data:
+        c_data["defects_detected"].discard("catch_plug_misaligned")
+        c_data["defects_detected"].discard("catch_plug_bend")
+
+
 def reset_cycle_state():
     global current_cycle, active_cycle_data, cycle_count, current_distance_overlay
     with lock:
@@ -1073,7 +1088,11 @@ def reset_cycle_state():
             "stable_dist_mm": None,
             "dist_last_model": None,
             "dist_last_center": None,
-            "dist_hold_frames": 0
+            "dist_hold_frames": 0,
+            "plug_fail_streak": 0,
+            "plug_fail_start_time": None,
+            "plug_fail_reason": None,
+            "plug_fail_last_center": None
         }
 
 # -------------------------------
@@ -2383,10 +2402,11 @@ def yolo_worker_loop():
                     active_cycle_data["dist_last_model"] = None
                     active_cycle_data["dist_last_center"] = None
                     active_cycle_data["dist_hold_frames"] = 0
+                    _reset_plug_fail_state(active_cycle_data, clear_defects=True)
                     active_cycle_data["defects_detected"].discard("distance_out_of_spec")
                     active_cycle_data["defects_detected"].discard("distance_ng")
-                    if "distance_out_of_spec" in frame_defects or "distance_ng" in frame_defects:
-                        frame_defects = [d for d in frame_defects if d not in ("distance_out_of_spec", "distance_ng")]
+                    if any(d in ("distance_out_of_spec", "distance_ng", "catch_plug_misaligned", "catch_plug_bend") for d in frame_defects):
+                        frame_defects = [d for d in frame_defects if d not in ("distance_out_of_spec", "distance_ng", "catch_plug_misaligned", "catch_plug_bend")]
                 else:
                     # Detect physical part movement (> 25 px shift) so old overlay/history never stick at old position
                     cur_part_center = None
@@ -2404,11 +2424,13 @@ def yolo_worker_loop():
                             active_cycle_data["dist_ng_streak"] = 0
                             active_cycle_data["dist_hold_frames"] = 0
                             active_cycle_data["distance_measurement"] = None
+                            _reset_plug_fail_state(active_cycle_data, clear_defects=False)
                             current_distance_overlay = None
                             current_cycle["gauge_distance"] = None
                             active_cycle_data["dist_last_center"] = cur_part_center
 
                     if distance_measurement_res and distance_measurement_res.get("is_valid") and distance_measurement_res.get("mm") is not None:
+                        _reset_plug_fail_state(active_cycle_data, clear_defects=True)
                         active_cycle_data["dist_hold_frames"] = 0
                         if cur_part_center is not None:
                             active_cycle_data["dist_last_center"] = cur_part_center
@@ -2510,6 +2532,60 @@ def yolo_worker_loop():
                         active_cycle_data["dist_hold_frames"] = 0
                         current_distance_overlay = None
                         current_cycle["gauge_distance"] = None
+
+                    # --- Debounced Catch-Plug Unmeasurable / Misaligned Alarm ---
+                    # Trigger only when back panel is settled, stationary, and inside ROI for N frames AND T seconds
+                    if not (distance_measurement_res and distance_measurement_res.get("is_valid")):
+                        gauge_cfg = APP_CONFIG.get("ai", {}).get("gauge", {}) if isinstance(APP_CONFIG.get("ai"), dict) else {}
+                        plug_settle_sec = float(gauge_cfg.get("plug_settle_sec", 0.8))
+                        plug_fail_min_frames = int(gauge_cfg.get("plug_fail_min_frames", 5))
+                        plug_fail_min_sec = float(gauge_cfg.get("plug_fail_min_sec", 1.5))
+
+                        now_ts = time.time()
+                        back_seen_ts = active_cycle_data.get("back_first_seen_time")
+                        is_settled_back = (
+                            state == "WAITING_BACK"
+                            and should_run_gauge
+                            and not front_only_visible
+                            and not orb_switching
+                            and not roi_warning
+                            and (detected_back_panel_class is not None or has_back_detected)
+                            and (back_seen_ts is not None)
+                            and ((now_ts - back_seen_ts) >= plug_settle_sec)
+                            and (distance_measurement_res is not None and not distance_measurement_res.get("is_valid"))
+                        )
+
+                        prev_fail_center = active_cycle_data.get("plug_fail_last_center")
+                        part_moving = False
+                        if cur_part_center is not None and prev_fail_center is not None:
+                            move_px = float(np.hypot(cur_part_center[0] - prev_fail_center[0], cur_part_center[1] - prev_fail_center[1]))
+                            if move_px > 15.0:
+                                part_moving = True
+
+                        if is_settled_back and not part_moving:
+                            active_cycle_data["plug_fail_last_center"] = cur_part_center or prev_fail_center
+                            active_cycle_data["plug_fail_streak"] = active_cycle_data.get("plug_fail_streak", 0) + 1
+                            if active_cycle_data.get("plug_fail_start_time") is None:
+                                active_cycle_data["plug_fail_start_time"] = now_ts
+                            reason = (distance_measurement_res or {}).get("fail_reason") or (
+                                "catch_plug_bend" if plug_class in ("catchplug_bend", "catchplug_wide") else "catch_plug_misaligned"
+                            )
+                            active_cycle_data["plug_fail_reason"] = reason
+
+                            elapsed_fail = now_ts - active_cycle_data["plug_fail_start_time"]
+                            if active_cycle_data["plug_fail_streak"] >= plug_fail_min_frames and elapsed_fail >= plug_fail_min_sec:
+                                other_reason = "catch_plug_misaligned" if reason == "catch_plug_bend" else "catch_plug_bend"
+                                active_cycle_data["defects_detected"].discard(other_reason)
+                                active_cycle_data["defects_detected"].add(reason)
+                                active_cycle_data["distance_measurement"] = None
+                                frame_defects.append(reason)
+                                has_defect_detected = True
+                        else:
+                            active_cycle_data["plug_fail_streak"] = 0
+                            active_cycle_data["plug_fail_start_time"] = None
+                            active_cycle_data["plug_fail_reason"] = None
+                            if cur_part_center is not None:
+                                active_cycle_data["plug_fail_last_center"] = cur_part_center
                         
             # --- Defect Frame Save ---
             # When defects are detected on the front panel, save the annotated frame once per cycle.
@@ -2638,7 +2714,7 @@ def yolo_worker_loop():
                     tracker = active_cycle_data.get("defect_tracker", {})
                     detected_classes = set(
                         d for d in frame_defects
-                        if d not in ("out_of_bounds", "distance_out_of_spec", "distance_ng")
+                        if d not in ("out_of_bounds", "distance_out_of_spec", "distance_ng", "catch_plug_misaligned", "catch_plug_bend")
                     )
 
                     for d in detected_classes:
@@ -3272,6 +3348,7 @@ def set_model():
             active_cycle_data["dist_last_model"] = None
             active_cycle_data["dist_last_center"] = None
             active_cycle_data["dist_hold_frames"] = 0
+            _reset_plug_fail_state(active_cycle_data, clear_defects=True)
             active_cycle_data["rect_variant"] = None
             active_cycle_data["rect_no_variant_frames"] = 0
             active_cycle_data["orb_override_key"] = None

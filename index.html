@@ -1838,6 +1838,8 @@
                 const hasHoleSpecError = data.defects && data.defects.includes('hole_spec_error');
                 const hasCatchPlugBend = data.defects && data.defects.includes('catchplug_bend');
                 const hasCatchPlugWide = data.defects && data.defects.includes('catchplug_wide');
+                const hasCatchPlugMisaligned = data.defects && data.defects.includes('catch_plug_misaligned');
+                const hasCatchPlugUnmeasuredBend = data.defects && data.defects.includes('catch_plug_bend');
                 const hasOutOfBounds = data.defects && data.defects.includes('out_of_bounds');
                 const isGaugePart = (
                     data.part_type === 'RECTANGLE' || data.locked_part_type === 'RECTANGLE' ||
@@ -1913,7 +1915,7 @@
                 updateDefectStatus(scrapMarkEl, hasScrapMark);
                 updateDefectStatus(legBendEl, hasLegBend);
                 updateDefectStatus(holeSpecErrorEl, hasHoleSpecError);
-                updateDefectStatus(catchPlugBendEl, hasCatchPlugBend);
+                updateDefectStatus(catchPlugBendEl, hasCatchPlugBend || hasCatchPlugUnmeasuredBend);
                 updateDefectStatus(catchPlugWideEl, hasCatchPlugWide);
                 
                 let warningMessages = [];
@@ -1928,6 +1930,8 @@
                 if (hasLegBend) warningMessages.push("LEG BEND DETECTED");
                 if (hasHoleSpecError) warningMessages.push("HOLE SPEC ERROR");
                 if (hasCatchPlugBend) warningMessages.push("CATCH PLUG BEND DETECTED");
+                if (hasCatchPlugUnmeasuredBend) warningMessages.push("CATCH PLUG BEND / NOT DETECTED");
+                if (hasCatchPlugMisaligned) warningMessages.push("CATCH PLUG MISALIGNED");
                 if (hasCatchPlugWide) warningMessages.push("CATCH PLUG WIDE DETECTED");
                 if (isGaugePart && hasDistanceNG) warningMessages.push("DISTANCE OUT OF SPEC");
                 if (holesMissing) {
@@ -2079,7 +2083,8 @@
                         { flag: hasScrapMark, key: 'scrap_mark', speech: 'Scrap mark is detected' },
                         { flag: hasLegBend,   key: 'leg_bend',   speech: 'Leg bend is detected' },
                         { flag: hasHoleSpecError, key: 'hole_spec_error', speech: 'Hole spec error is detected' },
-                        { flag: hasCatchPlugBend, key: 'catchplug_bend', speech: 'Catch plug bend is detected' },
+                        { flag: hasCatchPlugBend || hasCatchPlugUnmeasuredBend, key: 'catchplug_bend', speech: 'Catch plug bend is detected' },
+                        { flag: hasCatchPlugMisaligned, key: 'catch_plug_misaligned', speech: 'Catch plug misaligned. Please adjust the door' },
                         { flag: hasCatchPlugWide, key: 'catchplug_wide', speech: 'Catch plug wide is detected' }
                     ];
                     for (const item of defectAnnouncements) {
